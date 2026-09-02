@@ -93,8 +93,12 @@ class WorkflowRuntime:
         from gdev.agent import ToolRejected, run as agent_run
 
         # A named session replays its history as a persistent context window;
-        # a temporary session starts empty every time.
+        # a temporary session starts empty every time. If prompt() already
+        # appended this exact request to the window, pop it: agent_run() adds
+        # it back as this turn's user message, keeping the history correct.
         history = [] if config.session is None else list(window.messages)
+        if config.session is not None and history and history[-1] == {"role": "user", "content": prompt}:
+            history.pop()
         seen: list[dict] = []
 
         def llm(messages, tools=None):
@@ -113,8 +117,13 @@ class WorkflowRuntime:
             window.messages = list(seen)
         return result
 
-    def prompt(self, invitation: str = "describe what you want") -> bool:
-        """Yield control to the user; returns False on empty input/EOF."""
+    def prompt(self, invitation: str = "describe what you want", config: AgentConfig | None = None) -> bool:
+        """Yield control to the user; returns False on empty input/EOF.
+
+        With a config carrying a session, the user request is appended to
+        that session's context window immediately, so the next agent() call
+        with the same session sees it.
+        """
         try:
             text = input(f"\n{invitation}: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -123,6 +132,9 @@ class WorkflowRuntime:
         if not text:
             return False
         self.request = text
+        if config and config.session:
+            window = self._windows.setdefault(config.session, ContextWindow(config.session))
+            window.messages.append({"role": "user", "content": text})
         return True
 
     def workspace(self) -> str:
