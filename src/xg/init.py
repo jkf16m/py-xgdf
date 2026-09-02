@@ -1,4 +1,4 @@
-"""Initialization of a local .gdev subproject."""
+"""Initialization of a local .xg subproject."""
 
 from __future__ import annotations
 
@@ -10,31 +10,31 @@ from pathlib import Path
 
 
 def _ensure_ignored(project: Path) -> None:
-    """Ensure the local gdev environment is not committed."""
+    """Ensure the local xg environment is not committed."""
     path = project / ".gitignore"
     try:
         content = path.read_text(encoding="utf-8") if path.exists() else ""
     except OSError as exc:
         raise RuntimeError(f"could not read {path}: {exc}") from exc
-    if any(line.strip().rstrip("/") == ".gdev/.venv" for line in content.splitlines()):
+    if any(line.strip().rstrip("/") == ".xg/.venv" for line in content.splitlines()):
         return
     prefix = content if not content or content.endswith("\n") else content + "\n"
     separator = "" if not prefix or prefix.endswith("\n\n") else "\n"
     try:
-        path.write_text(prefix + separator + ".gdev/.venv/\n", encoding="utf-8")
+        path.write_text(prefix + separator + ".xg/.venv/\n", encoding="utf-8")
     except OSError as exc:
         raise RuntimeError(f"could not update {path}: {exc}") from exc
 
 
 def initialize(cwd: str | Path = ".") -> int:
-    """Create ``.gdev` config and a private environment containing gdev."""
+    """Create ``.xg` config and a private environment containing xg."""
     project = Path(cwd).resolve()
     try:
         _ensure_ignored(project)
     except RuntimeError as exc:
-        print(f"gdev init: {exc}", file=sys.stderr)
+        print(f"xg init: {exc}", file=sys.stderr)
         return 1
-    directory = project / ".gdev"
+    directory = project / ".xg"
     environment = directory / ".venv"
     config = directory / "config.json"
     directory.mkdir(parents=True, exist_ok=True)
@@ -43,10 +43,10 @@ def initialize(cwd: str | Path = ".") -> int:
         try:
             value = json.loads(config.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            print(f"gdev init: invalid existing config.json: {exc}", file=sys.stderr)
+            print(f"xg init: invalid existing config.json: {exc}", file=sys.stderr)
             return 1
         if not isinstance(value, dict):
-            print("gdev init: config.json must contain an object", file=sys.stderr)
+            print("xg init: config.json must contain an object", file=sys.stderr)
             return 1
     else:
         config.write_text("{}\n", encoding="utf-8")
@@ -60,12 +60,12 @@ def initialize(cwd: str | Path = ".") -> int:
     if (package_root / "pyproject.toml").is_file():
         package = str(package_root)
     else:
-        package = "gdev"
-    print("installing gdev into the local environment")
+        package = "xg"
+    print("installing xg into the local environment")
     try:
         subprocess.run([str(python), "-m", "pip", "install", "--upgrade", package], check=True)
     except subprocess.CalledProcessError as exc:
-        print(f"gdev init: could not install gdev: {exc}", file=sys.stderr)
+        print(f"xg init: could not install xg: {exc}", file=sys.stderr)
         return exc.returncode or 1
 
     print(f"initialized {directory}")

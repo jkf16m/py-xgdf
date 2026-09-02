@@ -26,7 +26,7 @@ from pathlib import Path
 
 from prompt_toolkit import prompt as line_prompt
 
-from gdev.workspace import resolve
+from xg.workspace import resolve
 
 BASE_TOOLS = {"select", "new", "delete"}
 SELECTED_TOOLS = {"edit", "close"}

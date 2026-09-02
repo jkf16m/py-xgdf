@@ -28,11 +28,11 @@ class Session:
 
 
 class SessionStore:
-    """Store request sessions in the workspace's ignored .gdev directory."""
+    """Store request sessions in the workspace's ignored .xg directory."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
-        self.directory = self.root / ".gdev" / "sessions"
+        self.directory = self.root / ".xg" / "sessions"
         self.directory.mkdir(parents=True, exist_ok=True)
 
     def create(self, prompt: str) -> Session:
@@ -53,7 +53,7 @@ class SessionStore:
         """Append input to the latest inactive session, or fail clearly."""
         session = self.latest_open()
         if session is None:
-            raise RuntimeError("no inactive session to continue; start a new session with gdev")
+            raise RuntimeError("no inactive session to continue; start a new session with xg")
         if text:
             session.prompt = f"{session.prompt}\n\n{text}" if session.prompt else text
             self._save(session)

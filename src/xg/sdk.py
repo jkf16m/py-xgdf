@@ -1,6 +1,6 @@
-"""Small SDK for defining deterministic gdev tools.
+"""Small SDK for defining deterministic xg tools.
 
-Tool modules under ``.gdev/tools`` can use this module without importing the CLI.
+Tool modules under ``.xg/tools`` can use this module without importing the CLI.
 A tool is just a name, an OpenAI-compatible schema, and a Python callable.
 """
 
@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from gdev.workspace import context as workspace_context
+from xg.workspace import context as workspace_context
 
 
 @dataclass
@@ -170,7 +170,7 @@ class Agent:
         """Expose these tool objects and fill the one the model uses."""
         if not tool_names:
             raise ValueError("agent.call() requires at least one tool")
-        from gdev.tools import ToolState, dispatch, schemas
+        from xg.tools import ToolState, dispatch, schemas
         from prompt_toolkit import prompt as line_prompt
         state = getattr(self, "_tool_state", None)
         if state is None:
@@ -206,8 +206,8 @@ class Agent:
 
 
 def profile(function: Callable[[Agent], Any]) -> Callable[[Agent], Any]:
-    """Mark an ordinary Python function as a gdev agent profile."""
-    function.__gdev_profile__ = True
+    """Mark an ordinary Python function as a xg agent profile."""
+    function.__xg_profile__ = True
     return function
 
 

@@ -3,29 +3,29 @@
 Public API:
     Session                 # a writable context window
     AgentConfig(model=None, session=None)
-    WorkflowRuntime        # passed to workflows as ``gdev``
+    WorkflowRuntime        # passed to workflows as ``xg``
     load_workflow(name, cwd) -> callable
     run_workflow(name, cwd) -> int
 
-A workflow is a Python file at ``.gdev/workflows/<name>.py`` exposing
-``run(gdev)``. Inside a workflow the author decides deterministically when to
+A workflow is a Python file at ``.xg/workflows/<name>.py`` exposing
+``run(xg)``. Inside a workflow the author decides deterministically when to
 execute shell steps, when to request model inference, and when to yield
 control to the user:
 
-    def run(gdev):
-        gdev.shell("ruff format .")
-        gdev.agent("fix all lint issues", config=AgentConfig(model="org/big"))
+    def run(xg):
+        xg.shell("ruff format .")
+        xg.agent("fix all lint issues", config=AgentConfig(model="org/big"))
 
         cfg = AgentConfig()                 # owns a session (context window)
         session = cfg.get_session()         # writable reference
         session.add("system", "answer in the user's language")
-        if gdev.prompt("describe the change", session=session):
-            gdev.agent(gdev.request, config=cfg)
+        if xg.prompt("describe the change", session=session):
+            xg.agent(xg.request, config=cfg)
 
 Rules:
-  * ``gdev.shell()`` is a trusted author step, never available to the model;
+  * ``xg.shell()`` is a trusted author step, never available to the model;
     the agent stays limited to the constrained file tools.
-  * ``AgentConfig.model`` defaults to the configured gdev model.
+  * ``AgentConfig.model`` defaults to the configured xg model.
   * ``AgentConfig()`` without an explicit session lazily creates one; keep
     the config around and every ``agent(config=cfg)`` call shares that
     context window. Without a session, each call runs on a temporary
@@ -43,17 +43,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from gdev.config import gdev_directories, load
-from gdev.llm import chat
-from gdev.tools import ToolSpec
-from gdev.workspace import context as workspace_context
+from xg.config import xg_directories, load
+from xg.llm import chat
+from xg.tools import ToolSpec
+from xg.workspace import context as workspace_context
 
 
 @dataclass(kw_only=True, slots=True)
 class Session:
     """An ephemeral, disk-backed context window.
 
-    Messages live in an append-only JSONL file under ``.gdev/sessions/``.
+    Messages live in an append-only JSONL file under ``.xg/sessions/``.
     Inference reads straight from that file: chat() walks it line-by-line to
     assemble the HTTP request body, so the window is never loaded into RAM.
     Writes append one JSON line at a time. Sessions are cheap to create —
@@ -72,7 +72,7 @@ class Session:
         """
         if self.path is not None:
             return
-        directory = Path(root).resolve() / ".gdev" / "sessions"
+        directory = Path(root).resolve() / ".xg" / "sessions"
         directory.mkdir(parents=True, exist_ok=True)
         slug = re.sub(r"[^a-z0-9-]+", "-", self.name.lower()).strip("-") or "session"
         self.path = directory / f"{slug}.jsonl"
@@ -129,7 +129,7 @@ class Session:
 class AgentConfig:
     """Optional inference settings for one or more agent() steps.
 
-    ``model`` defaults to the configured gdev model. ``session`` is a
+    ``model`` defaults to the configured xg model. ``session`` is a
     :class:`Session`; when omitted, one is created lazily by
     ``get_session()``. ``tools`` optionally narrows the agent's tool schema
     to these names only — plain strings are normalized to bare ToolSpecs
@@ -184,13 +184,13 @@ class AgentConfig:
 
 
 def default_model(cwd: str | Path = ".") -> str:
-    """Resolve the gdev default model: config.json, env, then built-in."""
+    """Resolve the xg default model: config.json, env, then built-in."""
     configured = load(cwd).get("model")
     if configured:
         return str(configured)
     import os
 
-    return os.environ.get("GDEV_MODEL", "@preset/mimo")
+    return os.environ.get("XG_MODEL", "@preset/mimo")
 
 
 class WorkflowRuntime:
@@ -227,7 +227,7 @@ class WorkflowRuntime:
         print(f"\n[workflow] agent step (model={model}, session={session.name}{', ephemeral' if ephemeral else ''})")
         # Late import avoids the loader cycle: agent.run imports tools, and
         # workflows import neither at module load time.
-        from gdev.agent import ToolRejected, run as agent_run
+        from xg.agent import ToolRejected, run as agent_run
 
         try:
             return agent_run(
@@ -266,13 +266,13 @@ class WorkflowRuntime:
         return workspace_context(self.root)
 
 
-def _builtin_default(gdev: WorkflowRuntime) -> int:
+def _builtin_default(xg: WorkflowRuntime) -> int:
     """The default workflow: the constrained file-editing flow."""
-    gdev.workspace()  # forced deterministic read
+    xg.workspace()  # forced deterministic read
     print("tools: select -> edit|close | new(name, content) | delete\n")
-    if not gdev.prompt("your request"):
+    if not xg.prompt("your request"):
         return 0
-    gdev.agent(gdev.request)
+    xg.agent(xg.request)
     return 0
 
 
@@ -281,13 +281,13 @@ def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[WorkflowRuntime
     if name == "default":
         return _builtin_default
     selected: Path | None = None
-    for directory in gdev_directories(cwd):
+    for directory in xg_directories(cwd):
         path = directory / "workflows" / f"{name}.py"
         if path.is_file():
             selected = path
     if selected is None:
         raise RuntimeError(f"workflow not found: {name}")
-    module_name = f"gdev_workflow_{name}"
+    module_name = f"xg_workflow_{name}"
     spec = importlib.util.spec_from_file_location(module_name, selected)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load workflow: {selected}")
@@ -295,7 +295,7 @@ def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[WorkflowRuntime
     spec.loader.exec_module(module)
     run = getattr(module, "run", None)
     if not callable(run):
-        raise RuntimeError(f"workflow must define run(gdev): {selected}")
+        raise RuntimeError(f"workflow must define run(xg): {selected}")
     return run
 
 
@@ -310,7 +310,7 @@ def list_workflows(cwd: str | Path = ".") -> list[str]:
     """Return available workflow names, built-ins first."""
     names = ["default"]
     seen = set()
-    for directory in gdev_directories(cwd):
+    for directory in xg_directories(cwd):
         for path in sorted((directory / "workflows").glob("*.py")):
             if path.stem not in seen:
                 seen.add(path.stem)

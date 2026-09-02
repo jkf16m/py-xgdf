@@ -81,7 +81,7 @@ def chat(messages, tools=None, model: str | None = None) -> dict:
     """
     import os
 
-    model = model or os.environ.get("GDEV_MODEL", "@preset/mimo")
+    model = model or os.environ.get("XG_MODEL", "@preset/mimo")
     connection = http.client.HTTPSConnection("openrouter.ai", timeout=300)
     try:
         connection.request(

@@ -1,4 +1,4 @@
-"""PTY launcher and command injection support for :command:`gdev --pty`."""
+"""PTY launcher and command injection support for :command:`xg --pty`."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ _MASTER_FD: int | None = None
 
 
 def _operator(path: str) -> None:
-    """Receive shell input requests from gdev and write them to the PTY master."""
+    """Receive shell input requests from xg and write them to the PTY master."""
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         server.bind(path)
@@ -55,12 +55,12 @@ def launch() -> int:
     if not Path(shell).exists():
         shell = shutil.which(shell) or "/bin/sh"
 
-    old = os.environ.get("GDEV_PTY")
-    socket_path = tempfile.mktemp(prefix="gdev-pty-", dir="/tmp")
+    old = os.environ.get("XG_PTY")
+    socket_path = tempfile.mktemp(prefix="xg-pty-", dir="/tmp")
     operator = threading.Thread(target=_operator, args=(socket_path,), daemon=True)
     operator.start()
-    os.environ["GDEV_PTY"] = "1"
-    os.environ["GDEV_PTY_SOCKET"] = socket_path
+    os.environ["XG_PTY"] = "1"
+    os.environ["XG_PTY_SOCKET"] = socket_path
     try:
         # pty.spawn handles raw mode, terminal copying, and restoring the
         # caller's terminal even when the shell exits via Ctrl-D.
@@ -68,10 +68,10 @@ def launch() -> int:
         return os.waitstatus_to_exitcode(status)
     finally:
         if old is None:
-            os.environ.pop("GDEV_PTY", None)
+            os.environ.pop("XG_PTY", None)
         else:
-            os.environ["GDEV_PTY"] = old
-        os.environ.pop("GDEV_PTY_SOCKET", None)
+            os.environ["XG_PTY"] = old
+        os.environ.pop("XG_PTY_SOCKET", None)
 
 
 def _master_read(fd: int) -> bytes:
@@ -110,7 +110,7 @@ def _command_from_answer(answer: str) -> str:
 
 
 def _cmd_schema() -> list[dict]:
-    """Expose only the command tool during a ``gdev cmd`` turn."""
+    """Expose only the command tool during a ``xg cmd`` turn."""
     return [{
         "type": "function",
         "function": {
@@ -153,7 +153,7 @@ def _clear_lines(count: int) -> None:
 
 def _inject_pty(command: str, submit: bool) -> str | None:
     """Inject keyboard input into the controlling PTY, optionally Enter."""
-    socket_path = os.environ.get("GDEV_PTY_SOCKET")
+    socket_path = os.environ.get("XG_PTY_SOCKET")
     if socket_path:
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
@@ -162,12 +162,12 @@ def _inject_pty(command: str, submit: bool) -> str | None:
             return None
         except OSError as exc:
             return f"could not send command to PTY operator: {exc}"
-    return "GDEV_PTY_SOCKET is not available"
+    return "XG_PTY_SOCKET is not available"
 
 
 def _invoke(command: str) -> str:
     """Approve a cmd call and put it into the real PTY shell prompt."""
-    if os.environ.get("GDEV_PTY"):
+    if os.environ.get("XG_PTY"):
         print("[y/N/e]")
         print(f"\033[2;32m$ {command}\033[0m")
         try:
@@ -188,9 +188,9 @@ def _invoke(command: str) -> str:
             return "command inserted into the PTY prompt and submitted for execution"
         # Return the command without injecting it. propose() ends the model
         # turn first, then performs the PTY handoff as its final operation.
-        return "__GDEV_PTY_EDIT_HANDOFF__" + command
+        return "__XG_PTY_EDIT_HANDOFF__" + command
 
-    # Without a controlling gdev PTY, provide a local editable fallback.
+    # Without a controlling xg PTY, provide a local editable fallback.
     print("\nProposed command (edit it, Tab autocompletes command names):")
     try:
         command = line_prompt(">> ", default=command, completer=WordCompleter(_executables(), sentence=True)).strip()
@@ -234,11 +234,11 @@ def propose(prompt: str, chat) -> int:
                 result = _invoke(command)
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 result = f"invalid cmd tool arguments: {exc}"
-            if result.startswith("__GDEV_PTY_EDIT_HANDOFF__"):
-                command = result.removeprefix("__GDEV_PTY_EDIT_HANDOFF__")
+            if result.startswith("__XG_PTY_EDIT_HANDOFF__"):
+                command = result.removeprefix("__XG_PTY_EDIT_HANDOFF__")
                 error = _inject_pty(command, submit=False)
                 if error:
-                    print(f"gdev cmd: {error}", file=sys.stderr)
+                    print(f"xg cmd: {error}", file=sys.stderr)
                     return 1
                 return 0
             messages.append({

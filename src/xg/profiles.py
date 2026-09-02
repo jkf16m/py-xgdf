@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from gdev.sdk import profile
-from gdev.workspace import context
+from xg.sdk import profile
+from xg.workspace import context
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ def default_program(agent) -> None:
 
 
 def default_profile() -> AgentProfile:
-    """The standard gdev agent: deterministic reads of the whole workspace."""
+    """The standard xg agent: deterministic reads of the whole workspace."""
     return AgentProfile(
         name="default",
         context=lambda root: context(root),

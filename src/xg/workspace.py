@@ -32,7 +32,7 @@ def files(root: str | Path) -> list[FileEntry]:
     entries: list[FileEntry] = []
     candidates = []
     for path in root.rglob("*"):
-        if not path.is_file() or any(part in {".git", ".gdev", "__pycache__", ".venv", "venv"} for part in path.relative_to(root).parts):
+        if not path.is_file() or any(part in {".git", ".xg", "__pycache__", ".venv", "venv"} for part in path.relative_to(root).parts):
             continue
         candidates.append(path)
     ignored = _gitignored(root, [path.relative_to(root).as_posix() for path in candidates])

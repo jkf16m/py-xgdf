@@ -12,9 +12,9 @@ from typing import Callable
 
 from prompt_toolkit import prompt as line_prompt
 
-from gdev.profiles import AgentProfile, default_profile, empty_profile
-from gdev.sdk import Agent
-from gdev.tools import ToolState, ToolSpec, dispatch, schemas
+from xg.profiles import AgentProfile, default_profile, empty_profile
+from xg.sdk import Agent
+from xg.tools import ToolState, ToolSpec, dispatch, schemas
 
 
 class ToolRejected(Exception):
@@ -24,7 +24,7 @@ class ToolRejected(Exception):
 def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None, tools: list[str | ToolSpec] | None = None, session=None, prompt_appended: bool = False) -> str:
     """Run one prompt using a reusable, code-defined agent profile.
 
-    ``session`` (a gdev.workflows.Session) makes the conversation log itself
+    ``session`` (a xg.workflows.Session) makes the conversation log itself
     the context window: every message is appended to its JSONL file and each
     model request is assembled by walking that file — the history is never
     loaded into RAM. ``prompt_appended`` marks that prompt() already wrote

@@ -3,17 +3,16 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pygdev"
+name = "py-xgdf"
 version = "0.1.0"
-description = "gdev: the Generative Development Framework — a deterministic coding agent with an interactive PTY shell and a tool SDK"
+description = "xg: the Generative Development Framework — a deterministic coding agent with an interactive PTY shell and a tool SDK"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["rich>=13.0", "prompt-toolkit>=3.0"]
 
 [project.scripts]
-gdev = "gdev.cli:main"
-gd = "gdev.cli:main"
+xg = "xg.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["gdev*"]
+include = ["xg*"]

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""gdev: a single-prompt deterministic coding agent with staged sessions.
+"""xg: a single-prompt deterministic coding agent with staged sessions.
 
 Commands:
-    gdev --pty       launch an interactive shell behind a pseudo-terminal
-    gdev PROMPT      create a new inactive coding-agent session
-    gdev c [TEXT]    append input to the latest inactive session
-    gdev r|run       execute the latest inactive session
-    gdev cmd [PROMPT]  propose a shell command and invoke it (or inject it into
+    xg --pty       launch an interactive shell behind a pseudo-terminal
+    xg PROMPT      create a new inactive coding-agent session
+    xg c [TEXT]    append input to the latest inactive session
+    xg r|run       execute the latest inactive session
+    xg cmd [PROMPT]  propose a shell command and invoke it (or inject it into
                      the active --pty shell prompt); without PROMPT, use TTY input
 """
 
@@ -18,14 +18,14 @@ from pathlib import Path
 from prompt_toolkit import prompt as line_prompt
 from prompt_toolkit.history import FileHistory
 
-from gdev.agent import ToolRejected, run
-from gdev.init import initialize
-from gdev.llm import chat
-from gdev.pty import launch, propose
-from gdev.profile_loader import load_profile
-from gdev.profiles import AgentProfile
-from gdev.session import SessionStore
-from gdev.workspace import files
+from xg.agent import ToolRejected, run
+from xg.init import initialize
+from xg.llm import chat
+from xg.pty import launch, propose
+from xg.profile_loader import load_profile
+from xg.profiles import AgentProfile
+from xg.session import SessionStore
+from xg.workspace import files
 
 
 def _input_text(arguments: list[str]) -> str:
@@ -51,7 +51,7 @@ def _run_session(store: SessionStore, session, profile: AgentProfile | None = No
         print(f"\nRejected tool call: {exc}")
     finally:
         store.close(session)
-        print(f"\nclosed session {session.id}; start a new session with `gdev \"request\"`")
+        print(f"\nclosed session {session.id}; start a new session with `xg \"request\"`")
     if rejected:
         # Remove the streamed answer and tool proposal before returning to input.
         sys.stdout.write("\033[2J\033[H")
@@ -62,9 +62,9 @@ def _run_session(store: SessionStore, session, profile: AgentProfile | None = No
 
 
 def _interactive_cmd() -> int:
-    """Collect a command request interactively, like bare ``gdev``."""
-    Path(".gdev").mkdir(parents=True, exist_ok=True)
-    history = FileHistory(str(Path(".gdev") / "cmd-history"))
+    """Collect a command request interactively, like bare ``xg``."""
+    Path(".xg").mkdir(parents=True, exist_ok=True)
+    history = FileHistory(str(Path(".xg") / "cmd-history"))
     context_lines: list[str] = []
     print("\033[90mType a command request. Submit an empty line to ask the agent; Ctrl-C exits.\033[0m")
     try:
@@ -89,7 +89,7 @@ def _interactive_cmd() -> int:
 
 def _interactive(store: SessionStore, profile: AgentProfile | None = None) -> int:
     """Collect context until an empty request starts inference."""
-    history = FileHistory(str(Path(".gdev") / "history"))
+    history = FileHistory(str(Path(".xg") / "history"))
     session = store.create("")
     print("\033[90mType context. Submit an empty request to start inference; Ctrl-C exits and saves it.\033[0m")
     try:
@@ -106,7 +106,7 @@ def _interactive(store: SessionStore, profile: AgentProfile | None = None) -> in
     except (EOFError, KeyboardInterrupt):
         if session.prompt.strip():
             history.append_string(session.prompt)
-        print("\ncontext saved; continue it with `gdev c`")
+        print("\ncontext saved; continue it with `xg c`")
         return 130
 
 
@@ -118,18 +118,18 @@ def main() -> int:
         try:
             profile = load_profile(argv[1], ".")
         except RuntimeError as exc:
-            print(f"gdev: {exc}", file=sys.stderr)
+            print(f"xg: {exc}", file=sys.stderr)
             return 2
         argv = argv[2:]
     if argv and argv[0].lower() == "init":
         if len(argv) != 1:
-            print("usage: gdev init", file=sys.stderr)
+            print("usage: xg init", file=sys.stderr)
             return 2
         return initialize(".")
 
     if argv and argv[0] == "--pty":
         if len(argv) != 1:
-            print("gdev: --pty does not accept arguments", file=sys.stderr)
+            print("xg: --pty does not accept arguments", file=sys.stderr)
             return 2
         return launch()
 
@@ -137,23 +137,23 @@ def main() -> int:
         argv = argv[1:]
         if not argv or argv[0] in {"ls", "list"}:
             if argv and len(argv) != 1:
-                print("usage: gdev --workflow [NAME|list]", file=sys.stderr)
+                print("usage: xg --workflow [NAME|list]", file=sys.stderr)
                 return 2
-            from gdev.workflows import list_workflows
+            from xg.workflows import list_workflows
 
             print("available workflows:")
             for workflow_name in list_workflows("."):
                 print(f"  {workflow_name}")
             return 0
         if len(argv) != 1:
-            print("usage: gdev --workflow [NAME|list]", file=sys.stderr)
+            print("usage: xg --workflow [NAME|list]", file=sys.stderr)
             return 2
         try:
-            from gdev.workflows import run_workflow
+            from xg.workflows import run_workflow
 
             return run_workflow(argv[0], ".")
         except RuntimeError as exc:
-            print(f"gdev: {exc}", file=sys.stderr)
+            print(f"xg: {exc}", file=sys.stderr)
             return 2
 
     if argv and argv[0].lower() == "cmd":
@@ -161,7 +161,7 @@ def main() -> int:
         if not prompt:
             if sys.stdin.isatty():
                 return _interactive_cmd()
-            print("usage: gdev cmd PROMPT", file=sys.stderr)
+            print("usage: xg cmd PROMPT", file=sys.stderr)
             return 2
         return propose(prompt, chat)
 
@@ -179,15 +179,15 @@ def main() -> int:
                 return 0
             session = store.continue_latest(text)
         except RuntimeError as exc:
-            print(f"gdev: {exc}", file=sys.stderr)
+            print(f"xg: {exc}", file=sys.stderr)
             return 1
-        print(f"continued session {session.id}; run `gdev r` when ready")
+        print(f"continued session {session.id}; run `xg r` when ready")
         return 0
 
     if command in {"r", "run"}:
         session = store.latest_open()
         if session is None:
-            print("gdev: no inactive session; start one with `gdev \"request\"`", file=sys.stderr)
+            print("xg: no inactive session; start one with `xg \"request\"`", file=sys.stderr)
             return 1
         return _run_session(store, session, profile)
 
@@ -198,8 +198,8 @@ def main() -> int:
     if not prompt:
         return 0
     session = store.create(prompt)
-    FileHistory(str(Path(".gdev") / "history")).append_string(prompt)
-    print(f"created session {session.id}; run `gdev r` when ready")
+    FileHistory(str(Path(".xg") / "history")).append_string(prompt)
+    print(f"created session {session.id}; run `xg r` when ready")
     return 0
 
 
