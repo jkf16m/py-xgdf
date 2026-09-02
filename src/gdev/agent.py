@@ -12,7 +12,7 @@ from typing import Callable
 
 from prompt_toolkit import prompt as line_prompt
 
-from gdev.profiles import AgentProfile, default_profile
+from gdev.profiles import AgentProfile, default_profile, empty_profile
 from gdev.sdk import Agent
 from gdev.tools import ToolState, dispatch, schemas
 
@@ -21,9 +21,13 @@ class ToolRejected(Exception):
     """Raised when the user rejects a proposed tool call."""
 
 
-def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None) -> str:
-    """Run one prompt using a reusable, code-defined agent profile."""
-    profile = profile or default_profile()
+def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None) -> str:
+    """Run one prompt using a reusable, code-defined agent profile.
+
+    ``history`` replays prior messages as the context window; it applies to
+    the message-loop profile and is ignored by imperative programs.
+    """
+    profile = profile or (empty_profile("workflow") if history is not None else default_profile())
     if profile.program is not None:
         program = Agent(root, prompt, chat, profile.system_prompt)
         profile.program(program)
@@ -32,6 +36,7 @@ def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = N
     state = ToolState(root)
     messages = [
         {"role": "system", "content": profile.system_prompt},
+        *(history or []),
         {"role": "user", "content": user_content},
     ]
     while True:

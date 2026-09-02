@@ -54,9 +54,11 @@ class _MarkdownStream:
         self.live.stop()
 
 
-def chat(messages, tools=None) -> dict:
+def chat(messages, tools=None, model: str | None = None) -> dict:
     """Stream one chat request and return its reconstructed assistant message."""
-    body = {"model": os.environ.get("GDEV_MODEL", "@preset/mimo"), "messages": messages, "stream": True}
+    import os
+
+    body = {"model": model or os.environ.get("GDEV_MODEL", "@preset/mimo"), "messages": messages, "stream": True}
     if tools:
         body["tools"] = tools
     req = Request(

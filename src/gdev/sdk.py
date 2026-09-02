@@ -191,7 +191,11 @@ class Agent:
         if name not in allowed:
             raise RuntimeError(f"tool not allowed at this execution point: {name}")
         print(f"\nProposed tool call: {name}({function.get('arguments', '{}')})")
-        if not line_prompt("Accept this tool call? [y/N] ").strip().lower() in {"y", "yes"}:
+        try:
+            accepted = line_prompt("Accept this tool call? [y/N] ").strip().lower() in {"y", "yes"}
+        except (EOFError, KeyboardInterrupt):
+            accepted = False
+        if not accepted:
             raise RuntimeError(f"tool call rejected: {name}")
         arguments = json.loads(function.get("arguments") or "{}")
         result = dispatch(state, name, function.get("arguments") or "{}")

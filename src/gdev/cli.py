@@ -133,6 +133,29 @@ def main() -> int:
             return 2
         return launch()
 
+    if argv and argv[0] in {"-w", "--workflow"}:
+        argv = argv[1:]
+        if not argv or argv[0] in {"ls", "list"}:
+            if argv and len(argv) != 1:
+                print("usage: gdev --workflow [NAME|list]", file=sys.stderr)
+                return 2
+            from gdev.workflows import list_workflows
+
+            print("available workflows:")
+            for workflow_name in list_workflows("."):
+                print(f"  {workflow_name}")
+            return 0
+        if len(argv) != 1:
+            print("usage: gdev --workflow [NAME|list]", file=sys.stderr)
+            return 2
+        try:
+            from gdev.workflows import run_workflow
+
+            return run_workflow(argv[0], ".")
+        except RuntimeError as exc:
+            print(f"gdev: {exc}", file=sys.stderr)
+            return 2
+
     if argv and argv[0].lower() == "cmd":
         prompt = _input_text(argv[1:])
         if not prompt:
