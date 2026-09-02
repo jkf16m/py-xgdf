@@ -21,11 +21,12 @@ class ToolRejected(Exception):
     """Raised when the user rejects a proposed tool call."""
 
 
-def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None) -> str:
+def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None, tools: list[str] | None = None) -> str:
     """Run one prompt using a reusable, code-defined agent profile.
 
     ``history`` replays prior messages as the context window; it applies to
     the message-loop profile and is ignored by imperative programs.
+    ``tools`` optionally narrows the exposed tool schema to these names.
     """
     profile = profile or (empty_profile("workflow") if history is not None else default_profile())
     if profile.program is not None:
@@ -34,6 +35,8 @@ def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = N
         return ""
     user_content = f"REQUEST:\n{prompt}\n\nPROFILE CONTEXT:\n{profile.context(root)}"
     state = ToolState(root)
+    if tools:
+        state.restrict(tools)
     messages = [
         {"role": "system", "content": profile.system_prompt},
         *(history or []),

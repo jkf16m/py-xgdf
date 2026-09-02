@@ -71,18 +71,38 @@ class AgentConfig:
 
     ``model`` defaults to the configured gdev model. ``session`` is a
     :class:`Session`; when omitted, one is created lazily by
-    ``get_session()``. Passing the same config (or session) to several
-    agent() calls makes them share one context window.
+    ``get_session()``. ``tools`` optionally narrows the agent's tool schema
+    to these names only (the internal state machine still applies). Passing
+    the same config (or session) to several agent() calls makes them share
+    one context window; use ``branch()`` or ``AgentConfig(**{**vars(cfg),
+    "tools": [...]})`` (object destructuring) for per-step variations.
     """
 
     model: str | None = None
     session: Session | None = None
+    tools: list[str] | None = None
 
     def get_session(self) -> Session:
         """Return the config's session, creating it on first use."""
         if self.session is None:
             self.session = Session()
         return self.session
+
+    def branch(self, model: str | None = None, session: Session | None = None,
+               tools: list[str] | None = None, **more) -> "AgentConfig":
+        """Derive a config with only the given fields replaced.
+
+        Fields left as None are inherited from this config; the session
+        object is shared, so branched steps still write to the same window.
+        ``more`` rejects typos instead of silently ignoring them.
+        """
+        if more:
+            raise TypeError(f"unknown AgentConfig fields: {sorted(more)}")
+        return AgentConfig(
+            model=model if model is not None else self.model,
+            session=session if session is not None else self.session,
+            tools=tools if tools is not None else self.tools,
+        )
 
 
 def default_model(cwd: str | Path = ".") -> str:
@@ -133,7 +153,7 @@ class WorkflowRuntime:
             return chat(messages, tools, model=model)
 
         try:
-            result = agent_run(str(self.root), prompt, llm, history=history)
+            result = agent_run(str(self.root), prompt, llm, history=history, tools=config.tools)
         except ToolRejected as exc:
             print(f"\n[workflow] tool call rejected: {exc}")
             result = f"tool call rejected: {exc}"

@@ -48,10 +48,25 @@ class ToolState:
         self.root = Path(root).resolve()
         self.selected: Path | None = None
         self.confirm = confirm
+        self.tool_set: set[str] | None = None  # optional restriction from workflow config
+
+    def restrict(self, tools: list[str]) -> None:
+        """Narrow valid tools to these names (workflow-provided subset)."""
+        unknown = set(tools) - (BASE_TOOLS | SELECTED_TOOLS)
+        if unknown:
+            raise ValueError(f"unknown tools: {', '.join(sorted(unknown))}")
+        self.tool_set = set(tools)
 
     def allowed_tools(self) -> set[str]:
         """Return only tools valid for the current workflow state."""
-        return SELECTED_TOOLS if self.selected is not None else BASE_TOOLS
+        allowed = SELECTED_TOOLS if self.selected is not None else BASE_TOOLS
+        if self.tool_set is not None:
+            allowed = allowed & self.tool_set
+            if self.selected is not None:
+                # close() is always available once a file is selected; it is
+                # the safety valve that un-stucks a restricted agent.
+                allowed.add("close")
+        return allowed
 
     def select(self, path: str) -> str:
         """Select an existing workspace file; only edit() or close() is valid next."""
