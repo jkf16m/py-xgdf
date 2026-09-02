@@ -46,7 +46,7 @@ from gdev.llm import chat
 from gdev.workspace import context as workspace_context
 
 
-@dataclass
+@dataclass(kw_only=True, slots=True)
 class Session:
     """A writable context window shared between prompt() and agent() calls.
 
@@ -65,7 +65,7 @@ class Session:
         self.messages.extend(more)
 
 
-@dataclass
+@dataclass(kw_only=True, slots=True)
 class AgentConfig:
     """Optional inference settings for one or more agent() steps.
 
@@ -81,6 +81,15 @@ class AgentConfig:
     model: str | None = None
     session: Session | None = None
     tools: list[str] | None = None
+
+    _KNOWN_TOOLS = frozenset({"select", "edit", "close", "new", "delete"})
+
+    def __post_init__(self) -> None:
+        """Fail fast on unknown tool names at construction, not at run time."""
+        if self.tools is not None:
+            unknown = set(self.tools) - self._KNOWN_TOOLS
+            if unknown:
+                raise ValueError(f"unknown tools: {', '.join(sorted(unknown))}")
 
     def get_session(self) -> Session:
         """Return the config's session, creating it on first use."""
