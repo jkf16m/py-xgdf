@@ -35,6 +35,8 @@ Rules:
 from __future__ import annotations
 
 import importlib.util
+import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -49,21 +51,78 @@ from gdev.workspace import context as workspace_context
 
 @dataclass(kw_only=True, slots=True)
 class Session:
-    """A writable context window shared between prompt() and agent() calls.
+    """An ephemeral, disk-backed context window.
 
-    Use ``add(role, content)`` or append dicts to ``messages`` directly;
-    agent() replays the whole history on every call.
+    Messages live in an append-only JSONL file under ``.gdev/sessions/``.
+    Inference reads straight from that file: chat() walks it line-by-line to
+    assemble the HTTP request body, so the window is never loaded into RAM.
+    Writes append one JSON line at a time. Sessions are cheap to create —
+    there is no lifecycle to manage.
     """
 
     name: str = "session"
-    messages: list[dict] = field(default_factory=list)
+    path: Path | None = None
+    _buffer: list[dict] = field(default_factory=list)  # pre-bind writes
+
+    def bind(self, root: str | Path) -> None:
+        """Attach the session to a workspace. Idempotent.
+
+        Existing files resume, so named sessions keep their history across
+        agent() calls and runs.
+        """
+        if self.path is not None:
+            return
+        directory = Path(root).resolve() / ".gdev" / "sessions"
+        directory.mkdir(parents=True, exist_ok=True)
+        slug = re.sub(r"[^a-z0-9-]+", "-", self.name.lower()).strip("-") or "session"
+        self.path = directory / f"{slug}.jsonl"
+        for message in self._buffer:
+            self._write(message)
+        self._buffer.clear()
+
+    def _write(self, message: dict) -> None:
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(message, ensure_ascii=False) + "\n")
 
     def add(self, role: str, content: str) -> None:
         """Append one message to the window."""
-        self.messages.append({"role": role, "content": content})
+        self.append({"role": role, "content": content})
 
-    def extend(self, more: list[dict]) -> None:
-        self.messages.extend(more)
+    def append(self, message: dict) -> None:
+        """Append a raw message dict (roles like tool need extra keys)."""
+        if self.path is not None:
+            self._write(message)
+        else:
+            self._buffer.append(message)
+
+    def extend(self, more) -> None:
+        for message in more:
+            self.append(message)
+
+    def __iter__(self):
+        """Walk the window oldest-first; one message in RAM at a time."""
+        if self.path is not None and self.path.exists():
+            with self.path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line:
+                        yield json.loads(line)
+        yield from self._buffer
+
+    def first(self) -> dict | None:
+        for message in self:
+            return message
+        return None
+
+    def last(self) -> dict | None:
+        result = None
+        for message in self:
+            result = message
+        return result
+
+    def snapshot(self) -> list[dict]:
+        """Materialize the window (debugging only; inference never does)."""
+        return list(self)
 
 
 @dataclass(kw_only=True, slots=True)
@@ -147,40 +206,41 @@ class WorkflowRuntime:
         return subprocess.run(command, shell=True, cwd=self.root).returncode
 
     def agent(self, prompt: str, config: AgentConfig | None = None) -> str:
-        """Run one constrained agent turn with optional model/session."""
+        """Run one constrained agent turn on a session-backed context window.
+
+        Without ``config.session`` an ephemeral session is created (unique
+        name, removed afterwards); with one, the window resumes from disk.
+        """
+        import uuid
+
         config = config or AgentConfig()
         model = config.model or default_model(self.root)
         session = config.session
-        print(f"\n[workflow] agent step (model={model}, session={session.name if session else 'temporary'})")
+        ephemeral = session is None
+        if ephemeral:
+            session = Session(name=f"temp-{uuid.uuid4().hex[:8]}")
+        session.bind(self.root)
+        prompt_appended = (
+            not ephemeral
+            and session.last() == {"role": "user", "content": prompt}
+        )
+        print(f"\n[workflow] agent step (model={model}, session={session.name}{', ephemeral' if ephemeral else ''})")
         # Late import avoids the loader cycle: agent.run imports tools, and
         # workflows import neither at module load time.
         from gdev.agent import ToolRejected, run as agent_run
 
-        # A provided session replays its history as a persistent context
-        # window; a temporary session starts empty every time. If prompt()
-        # already appended this exact request to the session, pop it:
-        # agent_run() adds it back as this turn's user message, keeping the
-        # history correct.
-        history = [] if session is None else list(session.messages)
-        if session is not None and history and history[-1] == {"role": "user", "content": prompt}:
-            history.pop()
-        seen: list[dict] = []
-
-        def llm(messages, tools=None):
-            seen.clear()
-            seen.extend(messages)
-            return chat(messages, tools, model=model)
-
         try:
-            result = agent_run(str(self.root), prompt, llm, history=history, tools=config.tools)
+            return agent_run(
+                str(self.root), prompt,
+                lambda messages, tools=None: chat(messages, tools, model=model),
+                tools=config.tools, session=session, prompt_appended=prompt_appended,
+            )
         except ToolRejected as exc:
             print(f"\n[workflow] tool call rejected: {exc}")
-            result = f"tool call rejected: {exc}"
-        # The loop mutates one list; the last observed snapshot is the whole
-        # conversation including tool exchanges.
-        if seen and session is not None:
-            session.messages = list(seen)
-        return result
+            return f"tool call rejected: {exc}"
+        finally:
+            if ephemeral and session.path is not None and session.path.exists():
+                session.path.unlink()
 
     def prompt(self, invitation: str = "describe what you want", session: Session | None = None) -> bool:
         """Yield control to the user; returns False on empty input/EOF.

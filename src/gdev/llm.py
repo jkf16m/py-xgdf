@@ -4,12 +4,12 @@ Public API:
     chat(messages, tools=None) -> dict
 """
 
+import http.client
 import json
 import os
 import subprocess
 import sys
 import time
-from urllib.request import Request, urlopen
 
 from rich.console import Console
 from rich.live import Live
@@ -54,44 +54,78 @@ class _MarkdownStream:
         self.live.stop()
 
 
+def _request_chunks(source, model: str, tools):
+    """Yield the JSON request body one chunk at a time.
+
+    ``source`` may be any iterable of message dicts — including a Session,
+    whose iterator walks its JSONL file on disk. Nothing beyond one message
+    is ever materialized here.
+    """
+    yield b'{"model":' + json.dumps(model).encode() + b',"messages":['
+    separator = b""
+    for message in source:
+        yield separator + json.dumps(message, ensure_ascii=False).encode()
+        separator = b","
+    yield b"]"
+    if tools:
+        yield b',"tools":' + json.dumps(tools, ensure_ascii=False).encode()
+    yield b',"stream":true}'
+
+
 def chat(messages, tools=None, model: str | None = None) -> dict:
-    """Stream one chat request and return its reconstructed assistant message."""
+    """Stream one chat request and return its reconstructed assistant message.
+
+    ``messages`` may be a plain list or any iterable of message dicts (e.g. a
+    session backed by a file); the request body is generated and sent with
+    chunked transfer encoding, so the conversation is never materialized.
+    """
     import os
 
-    body = {"model": model or os.environ.get("GDEV_MODEL", "@preset/mimo"), "messages": messages, "stream": True}
-    if tools:
-        body["tools"] = tools
-    req = Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=json.dumps(body).encode(),
-        headers={"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json"},
-    )
-    printer = _MarkdownStream()
-    content, calls = [], {}
-    with urlopen(req, timeout=300) as response:
-        for raw in response:
-            line = raw.decode("utf-8").strip()
-            if not line.startswith("data:"):
-                continue
-            payload = line[5:].strip()
-            if payload == "[DONE]":
-                break
-            try:
-                delta = json.loads(payload)["choices"][0].get("delta", {})
-            except (ValueError, KeyError, IndexError):
-                continue
-            text = delta.get("content") or ""
-            if text:
-                content.append(text)
-                printer.feed(text)
-            for call in delta.get("tool_calls") or []:
-                index = call.get("index", 0)
-                item = calls.setdefault(index, {"id": call.get("id", ""), "type": "function", "function": {"name": "", "arguments": ""}})
-                item["id"] = item["id"] or call.get("id", "")
-                function = call.get("function") or {}
-                item["function"]["name"] += function.get("name", "")
-                item["function"]["arguments"] += function.get("arguments", "")
-    printer.close()
+    model = model or os.environ.get("GDEV_MODEL", "@preset/mimo")
+    connection = http.client.HTTPSConnection("openrouter.ai", timeout=300)
+    try:
+        connection.request(
+            "POST", "/api/v1/chat/completions",
+            body=_request_chunks(messages, model, tools),
+            headers={
+                "Authorization": f"Bearer {_api_key()}",
+                "Content-Type": "application/json",
+            },
+            encode_chunked=True,
+        )
+        response = connection.getresponse()
+        if response.status != 200:
+            error = response.read().decode(errors="replace")
+            raise RuntimeError(f"chat request failed (HTTP {response.status}): {error[:300]}")
+        printer = _MarkdownStream()
+        content, calls = [], {}
+        try:
+            for raw in response:
+                line = raw.decode("utf-8").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(payload)["choices"][0].get("delta", {})
+                except (ValueError, KeyError, IndexError):
+                    continue
+                text = delta.get("content") or ""
+                if text:
+                    content.append(text)
+                    printer.feed(text)
+                for call in delta.get("tool_calls") or []:
+                    index = call.get("index", 0)
+                    item = calls.setdefault(index, {"id": call.get("id", ""), "type": "function", "function": {"name": "", "arguments": ""}})
+                    item["id"] = item["id"] or call.get("id", "")
+                    function = call.get("function") or {}
+                    item["function"]["name"] += function.get("name", "")
+                    item["function"]["arguments"] += function.get("arguments", "")
+        finally:
+            printer.close()
+    finally:
+        connection.close()
     if content:
         sys.stdout.write("\n")
         sys.stdout.flush()

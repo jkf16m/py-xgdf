@@ -21,13 +21,15 @@ class ToolRejected(Exception):
     """Raised when the user rejects a proposed tool call."""
 
 
-def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None, tools: list[str | ToolSpec] | None = None) -> str:
+def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None, tools: list[str | ToolSpec] | None = None, session=None, prompt_appended: bool = False) -> str:
     """Run one prompt using a reusable, code-defined agent profile.
 
-    ``history`` replays prior messages as the context window; it applies to
-    the message-loop profile and is ignored by imperative programs.
-    ``tools`` optionally narrows the exposed tool schema to these names and
-    may carry ToolSpec metadata overrides (description/parameters).
+    ``session`` (a gdev.workflows.Session) makes the conversation log itself
+    the context window: every message is appended to its JSONL file and each
+    model request is assembled by walking that file — the history is never
+    loaded into RAM. ``prompt_appended`` marks that prompt() already wrote
+    the request into the session, so only the profile context is added.
+    The legacy ``history`` list path and imperative profiles ignore sessions.
     """
     tool_names: list[str] = []
     tool_specs: dict[str, ToolSpec] = {}
@@ -37,6 +39,14 @@ def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = N
             tool_specs[entry.name] = entry
         else:
             tool_names.append(entry)
+    if session is not None:
+        # The session-logged loop replaces imperative programs: the file is
+        # the conversation, so the message loop below is the only valid path.
+        profile = profile or default_profile()
+        state = ToolState(root)
+        if tools:
+            state.restrict(tool_names)
+        return _run_logged(root, prompt, chat, profile, state, tool_specs, session, prompt_appended)
     profile = profile or (empty_profile("workflow") if history is not None else default_profile())
     if profile.program is not None:
         program = Agent(root, prompt, chat, profile.system_prompt)
@@ -76,6 +86,48 @@ def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = N
             except Exception as exc:
                 result = f"tool error: {exc}"
             messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": result})
+
+
+def _run_logged(root, prompt, chat, profile, state, tool_specs, session, prompt_appended) -> str:
+    """Agent loop whose conversation log IS the session file.
+
+    Each model request is built by streaming the session file line-by-line;
+    every assistant reply and tool result is appended before the next
+    request. RAM holds one message at a time.
+    """
+    profile = profile or default_profile()
+    if not any(m.get("role") == "system" for m in session):  # O(1) RAM walk
+        session.add("system", profile.system_prompt)
+    context = profile.context(root)
+    if prompt_appended:
+        session.add("user", f"PROFILE CONTEXT:\n{context}")
+    else:
+        session.add("user", f"REQUEST:\n{prompt}\n\nPROFILE CONTEXT:\n{context}")
+    while True:
+        message = chat(session, schemas(state.allowed_tools(), overrides=tool_specs))
+        session.append(message)
+        calls = message.get("tool_calls") or []
+        if not calls:
+            return str(message.get("content") or "")
+        for call in calls:
+            fn = call.get("function") or {}
+            name = fn.get("name", "")
+            print(f"\nProposed tool call: {name}({fn.get('arguments', '{}')})")
+            if name == "edit":
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                    print(state.preview_edit(args.get("old_text", ""), args.get("new_text", "")))
+                except Exception as exc:
+                    print(f"preview unavailable: {exc}")
+            if not _accept_tool():
+                session.append({"role": "tool", "tool_call_id": call.get("id", ""),
+                                "content": f"user rejected the tool call: {name}"})
+                raise ToolRejected(name)
+            try:
+                result = dispatch(state, fn.get("name", ""), fn.get("arguments", "{}"))
+            except Exception as exc:
+                result = f"tool error: {exc}"
+            session.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
 
 
 def _accept_tool() -> bool:
