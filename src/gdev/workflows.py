@@ -73,7 +73,9 @@ class AgentConfig:
     ``model`` defaults to the configured gdev model. ``session`` is a
     :class:`Session`; when omitted, one is created lazily by
     ``get_session()``. ``tools`` optionally narrows the agent's tool schema
-    to these names only (the internal state machine still applies). Passing
+    to these names only — plain strings are normalized to bare ToolSpecs
+    internally (no description, no parameters); the internal state machine
+    still applies. Passing
     the same config (or session) to several agent() calls makes them share
     one context window; use ``branch()`` or ``AgentConfig(**{**vars(cfg),
     "tools": [...]})`` (object destructuring) for per-step variations.
@@ -86,12 +88,18 @@ class AgentConfig:
     _KNOWN_TOOLS = frozenset({"select", "edit", "close", "new", "delete"})
 
     def __post_init__(self) -> None:
-        """Fail fast on unknown tool names at construction, not at run time."""
+        """Normalize plain strings to bare ToolSpecs and fail fast on
+        unknown tool names at construction, not at run time."""
         if self.tools is not None:
-            names = [entry if isinstance(entry, str) else entry.name for entry in self.tools]
-            unknown = set(names) - self._KNOWN_TOOLS
+            normalized: list[ToolSpec] = []
+            for entry in self.tools:
+                if isinstance(entry, str):
+                    entry = ToolSpec(name=entry)
+                normalized.append(entry)
+            unknown = set(spec.name for spec in normalized) - self._KNOWN_TOOLS
             if unknown:
                 raise ValueError(f"unknown tools: {', '.join(sorted(unknown))}")
+            self.tools = normalized
 
     def get_session(self) -> Session:
         """Return the config's session, creating it on first use."""
