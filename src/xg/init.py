@@ -26,6 +26,16 @@ def _ensure_ignored(project: Path) -> None:
         raise RuntimeError(f"could not update {path}: {exc}") from exc
 
 
+def _package_root() -> Path | None:
+    """Repo root containing this checkout's pyproject.toml, if any."""
+    for parent in Path(__file__).resolve().parents:
+        if not (parent / "pyproject.toml").is_file():
+            continue
+        if (parent / "src" / "xg" / "init.py").is_file() or (parent / "xg" / "init.py").is_file():
+            return parent
+    return None
+
+
 def initialize(cwd: str | Path = ".") -> int:
     """Create ``.xg` config and a private environment containing xg."""
     project = Path(cwd).resolve()
@@ -56,11 +66,8 @@ def initialize(cwd: str | Path = ".") -> int:
         venv.EnvBuilder(with_pip=True, clear=False).create(environment)
 
     python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-    package_root = Path(__file__).resolve().parents[1]
-    if (package_root / "pyproject.toml").is_file():
-        package = str(package_root)
-    else:
-        package = "xg"
+    package_root = _package_root()
+    package = str(package_root) if package_root else "xg"
     print("installing xg into the local environment")
     try:
         subprocess.run([str(python), "-m", "pip", "install", "--upgrade", package], check=True)
