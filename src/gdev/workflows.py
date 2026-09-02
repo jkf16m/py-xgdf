@@ -1,6 +1,7 @@
 """Near-deterministic workflow programs.
 
 Public API:
+    Session                 # a writable context window
     AgentConfig(model=None, session=None)
     WorkflowRuntime        # passed to workflows as ``gdev``
     load_workflow(name, cwd) -> callable
@@ -14,16 +15,21 @@ control to the user:
     def run(gdev):
         gdev.shell("ruff format .")
         gdev.agent("fix all lint issues", config=AgentConfig(model="org/big"))
-        if gdev.prompt("describe the change"):
-            gdev.agent(gdev.request, config=AgentConfig(session="main"))
+
+        cfg = AgentConfig()                 # owns a session (context window)
+        session = cfg.get_session()         # writable reference
+        session.add("system", "answer in the user's language")
+        if gdev.prompt("describe the change", session=session):
+            gdev.agent(gdev.request, config=cfg)
 
 Rules:
   * ``gdev.shell()`` is a trusted author step, never available to the model;
     the agent stays limited to the constrained file tools.
   * ``AgentConfig.model`` defaults to the configured gdev model.
-  * ``AgentConfig.session`` names a context window that persists across
-    ``agent()`` calls within the workflow; without it each agent call runs on
-    a temporary context (the model works from its own memory alone).
+  * ``AgentConfig()`` without an explicit session lazily creates one; keep
+    the config around and every ``agent(config=cfg)`` call shares that
+    context window. Without a session, each call runs on a temporary
+    context (the model works from its own memory alone).
 """
 
 from __future__ import annotations
@@ -41,11 +47,19 @@ from gdev.workspace import context as workspace_context
 
 
 @dataclass
-class ContextWindow:
-    """Replaying message history for one named session."""
+class Session:
+    """A writable context window shared between prompt() and agent() calls.
 
-    name: str
+    Use ``add(role, content)`` or append dicts to ``messages`` directly;
+    agent() replays the whole history on every call.
+    """
+
+    name: str = "session"
     messages: list[dict] = field(default_factory=list)
+
+    def add(self, role: str, content: str) -> None:
+        """Append one message to the window."""
+        self.messages.append({"role": role, "content": content})
 
     def extend(self, more: list[dict]) -> None:
         self.messages.extend(more)
@@ -53,10 +67,22 @@ class ContextWindow:
 
 @dataclass
 class AgentConfig:
-    """Optional inference settings for one agent() step."""
+    """Optional inference settings for one or more agent() steps.
+
+    ``model`` defaults to the configured gdev model. ``session`` is a
+    :class:`Session`; when omitted, one is created lazily by
+    ``get_session()``. Passing the same config (or session) to several
+    agent() calls makes them share one context window.
+    """
 
     model: str | None = None
-    session: str | None = None
+    session: Session | None = None
+
+    def get_session(self) -> Session:
+        """Return the config's session, creating it on first use."""
+        if self.session is None:
+            self.session = Session()
+        return self.session
 
 
 def default_model(cwd: str | Path = ".") -> str:
@@ -75,7 +101,6 @@ class WorkflowRuntime:
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
         self.request: str = ""
-        self._windows: dict[str, ContextWindow] = {}
 
     def shell(self, command: str) -> int:
         """Run one trusted shell step as the workflow author, not the agent."""
@@ -86,18 +111,19 @@ class WorkflowRuntime:
         """Run one constrained agent turn with optional model/session."""
         config = config or AgentConfig()
         model = config.model or default_model(self.root)
-        print(f"\n[workflow] agent step (model={model}, session={config.session or 'temporary'})")
-        window = self._windows.setdefault(config.session or "__temporary__", ContextWindow(config.session or "__temporary__"))
+        session = config.session
+        print(f"\n[workflow] agent step (model={model}, session={session.name if session else 'temporary'})")
         # Late import avoids the loader cycle: agent.run imports tools, and
         # workflows import neither at module load time.
         from gdev.agent import ToolRejected, run as agent_run
 
-        # A named session replays its history as a persistent context window;
-        # a temporary session starts empty every time. If prompt() already
-        # appended this exact request to the window, pop it: agent_run() adds
-        # it back as this turn's user message, keeping the history correct.
-        history = [] if config.session is None else list(window.messages)
-        if config.session is not None and history and history[-1] == {"role": "user", "content": prompt}:
+        # A provided session replays its history as a persistent context
+        # window; a temporary session starts empty every time. If prompt()
+        # already appended this exact request to the session, pop it:
+        # agent_run() adds it back as this turn's user message, keeping the
+        # history correct.
+        history = [] if session is None else list(session.messages)
+        if session is not None and history and history[-1] == {"role": "user", "content": prompt}:
             history.pop()
         seen: list[dict] = []
 
@@ -113,16 +139,16 @@ class WorkflowRuntime:
             result = f"tool call rejected: {exc}"
         # The loop mutates one list; the last observed snapshot is the whole
         # conversation including tool exchanges.
-        if seen:
-            window.messages = list(seen)
+        if seen and session is not None:
+            session.messages = list(seen)
         return result
 
-    def prompt(self, invitation: str = "describe what you want", config: AgentConfig | None = None) -> bool:
+    def prompt(self, invitation: str = "describe what you want", session: Session | None = None) -> bool:
         """Yield control to the user; returns False on empty input/EOF.
 
-        With a config carrying a session, the user request is appended to
-        that session's context window immediately, so the next agent() call
-        with the same session sees it.
+        With ``session``, the user request is appended to that session's
+        context window immediately, so the next agent() call with the same
+        session sees it.
         """
         try:
             text = input(f"\n{invitation}: ").strip()
@@ -132,9 +158,8 @@ class WorkflowRuntime:
         if not text:
             return False
         self.request = text
-        if config and config.session:
-            window = self._windows.setdefault(config.session, ContextWindow(config.session))
-            window.messages.append({"role": "user", "content": text})
+        if session is not None:
+            session.add("user", text)
         return True
 
     def workspace(self) -> str:
