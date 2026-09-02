@@ -21,6 +21,7 @@ from __future__ import annotations
 import difflib
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from prompt_toolkit import prompt as line_prompt
@@ -29,6 +30,25 @@ from gdev.workspace import resolve
 
 BASE_TOOLS = {"select", "new", "delete"}
 SELECTED_TOOLS = {"edit", "close"}
+
+
+@dataclass(slots=True)
+class ToolSpec:
+    """A tool reference with optional metadata for the model.
+
+    Only ``name`` is required (must match a built-in tool). A ``description``
+    overrides the built-in schema description and ``parameters`` overrides
+    the JSON schema — richer information makes the model more reliable, but
+    execution still follows the built-in state machine.
+    """
+
+    name: str
+    description: str | None = None
+    parameters: dict | None = None
+
+    @property
+    def title(self) -> str:
+        return self.name
 
 
 def _confirm_terminal(message: str) -> bool:
@@ -133,8 +153,12 @@ class ToolState:
         return f"deleted {name}"
 
 
-def schemas(allowed: set[str] | None = None) -> list[dict]:
-    """Return schemas, narrowed to the currently valid workflow step."""
+def schemas(allowed: set[str] | None = None, overrides: dict[str, ToolSpec] | None = None) -> list[dict]:
+    """Return schemas, narrowed to the currently valid workflow step.
+
+    ``overrides`` applies per-tool description/parameter customizations from
+    ToolSpec references onto the built-in schemas.
+    """
     all_schemas = [
         {"type": "function", "function": {"name": "select", "description": "Select an existing file; then edit() it or close() to go back.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "edit", "description": "Edit the file selected by select().", "parameters": {"type": "object", "properties": {"old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["old_text", "new_text"]}}},
@@ -142,9 +166,15 @@ def schemas(allowed: set[str] | None = None) -> list[dict]:
         {"type": "function", "function": {"name": "new", "description": "Create a new file with content in a single operation.", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "content": {"type": "string"}}, "required": ["name", "content"]}}},
         {"type": "function", "function": {"name": "delete", "description": "Delete an existing file; the user is asked for confirmation.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
     ]
-    if allowed is None:
-        return all_schemas
-    return [schema for schema in all_schemas if schema["function"]["name"] in allowed]
+    result = [schema for schema in all_schemas if schema["function"]["name"] in allowed]
+    for schema in result:
+        spec = (overrides or {}).get(schema["function"]["name"])
+        if spec is not None:
+            if spec.description:
+                schema["function"]["description"] = spec.description
+            if spec.parameters:
+                schema["function"]["parameters"] = spec.parameters
+    return result
 
 
 def dispatch(state: ToolState, name: str, arguments: str) -> str:

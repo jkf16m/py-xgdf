@@ -43,6 +43,7 @@ from typing import Any, Callable
 
 from gdev.config import gdev_directories, load
 from gdev.llm import chat
+from gdev.tools import ToolSpec
 from gdev.workspace import context as workspace_context
 
 
@@ -80,14 +81,15 @@ class AgentConfig:
 
     model: str | None = None
     session: Session | None = None
-    tools: list[str] | None = None
+    tools: list[str | ToolSpec] | None = None
 
     _KNOWN_TOOLS = frozenset({"select", "edit", "close", "new", "delete"})
 
     def __post_init__(self) -> None:
         """Fail fast on unknown tool names at construction, not at run time."""
         if self.tools is not None:
-            unknown = set(self.tools) - self._KNOWN_TOOLS
+            names = [entry if isinstance(entry, str) else entry.name for entry in self.tools]
+            unknown = set(names) - self._KNOWN_TOOLS
             if unknown:
                 raise ValueError(f"unknown tools: {', '.join(sorted(unknown))}")
 
@@ -98,7 +100,7 @@ class AgentConfig:
         return self.session
 
     def branch(self, model: str | None = None, session: Session | None = None,
-               tools: list[str] | None = None, **more) -> "AgentConfig":
+               tools: list[str | ToolSpec] | None = None, **more) -> "AgentConfig":
         """Derive a config with only the given fields replaced.
 
         Fields left as None are inherited from this config; the session

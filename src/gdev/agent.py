@@ -14,20 +14,29 @@ from prompt_toolkit import prompt as line_prompt
 
 from gdev.profiles import AgentProfile, default_profile, empty_profile
 from gdev.sdk import Agent
-from gdev.tools import ToolState, dispatch, schemas
+from gdev.tools import ToolState, ToolSpec, dispatch, schemas
 
 
 class ToolRejected(Exception):
     """Raised when the user rejects a proposed tool call."""
 
 
-def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None, tools: list[str] | None = None) -> str:
+def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None, tools: list[str | ToolSpec] | None = None) -> str:
     """Run one prompt using a reusable, code-defined agent profile.
 
     ``history`` replays prior messages as the context window; it applies to
     the message-loop profile and is ignored by imperative programs.
-    ``tools`` optionally narrows the exposed tool schema to these names.
+    ``tools`` optionally narrows the exposed tool schema to these names and
+    may carry ToolSpec metadata overrides (description/parameters).
     """
+    tool_names: list[str] = []
+    tool_specs: dict[str, ToolSpec] = {}
+    for entry in tools or []:
+        if isinstance(entry, ToolSpec):
+            tool_names.append(entry.name)
+            tool_specs[entry.name] = entry
+        else:
+            tool_names.append(entry)
     profile = profile or (empty_profile("workflow") if history is not None else default_profile())
     if profile.program is not None:
         program = Agent(root, prompt, chat, profile.system_prompt)
@@ -36,7 +45,7 @@ def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = N
     user_content = f"REQUEST:\n{prompt}\n\nPROFILE CONTEXT:\n{profile.context(root)}"
     state = ToolState(root)
     if tools:
-        state.restrict(tools)
+        state.restrict(tool_names)
     messages = [
         {"role": "system", "content": profile.system_prompt},
         *(history or []),
@@ -45,7 +54,7 @@ def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = N
     while True:
         # Tool exposure is recomputed before every model request. Once a
         # workflow step starts, the model literally cannot see the other tools.
-        message = chat(messages, schemas(state.allowed_tools()))
+        message = chat(messages, schemas(state.allowed_tools(), overrides=tool_specs))
         messages.append(message)
         calls = message.get("tool_calls") or []
         if not calls:
