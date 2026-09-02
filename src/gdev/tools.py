@@ -5,49 +5,66 @@ Public API:
     schemas() -> list[dict]
     ToolState.select(path) -> str
     ToolState.edit(old_text, new_text) -> str
-    ToolState.new(name) -> str
-    ToolState.content(content) -> str
+    ToolState.close() -> str
+    ToolState.new(name, content) -> str
+    ToolState.delete(path) -> str
+
+The default flow is deliberately constrained. There is no shell access.
+Allowed transitions:
+    select(path) -> edit(old_text, new_text) | close()
+    new(name, content)            (single operation)
+    delete(path)                  (single operation, asks for confirmation)
 """
 
 from __future__ import annotations
 
 import difflib
 import json
+import sys
 from pathlib import Path
 
+from prompt_toolkit import prompt as line_prompt
+
 from gdev.workspace import resolve
+
+BASE_TOOLS = {"select", "new", "delete"}
+SELECTED_TOOLS = {"edit", "close"}
+
+
+def _confirm_terminal(message: str) -> bool:
+    """Terminal confirmation prompt used for destructive operations."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        return line_prompt(message).strip().lower() in {"y", "yes"}
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
 class ToolState:
     """Tool state for one agent turn; selection is required before editing."""
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, confirm=_confirm_terminal):
         self.root = Path(root).resolve()
         self.selected: Path | None = None
-        self.pending_new: Path | None = None
-        # A select/new call starts a mandatory two-step workflow. Until the
-        # second step completes, no other tool call is valid.
-        self.expected: str | None = None
-        self.workflow_started = False
-        self.workflow_complete = False
+        self.confirm = confirm
 
     def allowed_tools(self) -> set[str]:
         """Return only tools valid for the current workflow state."""
-        if self.workflow_complete:
-            return set()
-        if self.expected:
-            return {self.expected}
-        return {"select", "new"}
+        return SELECTED_TOOLS if self.selected is not None else BASE_TOOLS
 
     def select(self, path: str) -> str:
-        """Select an existing workspace file for the next edit."""
-        if self.workflow_complete or self.workflow_started:
-            raise ValueError("this turn already has a completed or active workflow")
+        """Select an existing workspace file; only edit() or close() is valid next."""
         self.selected = resolve(self.root, path)
-        self.pending_new = None
-        self.expected = "edit"
-        self.workflow_started = True
-        return f"selected {self.selected.relative_to(self.root).as_posix()}; next call must be edit()"
+        return f"selected {self.selected.relative_to(self.root).as_posix()}; next call must be edit() or close()"
+
+    def close(self) -> str:
+        """Close the selected file and return to the previous step."""
+        if self.selected is None:
+            raise ValueError("no file is selected")
+        name = self.selected.relative_to(self.root).as_posix()
+        self.selected = None
+        return f"closed {name}; back to {', '.join(sorted(BASE_TOOLS))}"
 
     def preview_edit(self, old_text: str, new_text: str) -> str:
         """Return a colored unified diff without changing the selected file."""
@@ -64,57 +81,51 @@ class ToolState:
         )
         lines = []
         for line in diff:
-            color = "\\033[31m" if line.startswith("-") and not line.startswith("---") else "\\033[32m" if line.startswith("+") and not line.startswith("+++") else "\\033[90m"
-            lines.append(f"{color}{line.rstrip()}\\033[0m")
-        return "\\n".join(lines) or "(no changes)"
+            color = "\033[31m" if line.startswith("-") and not line.startswith("---") else "\033[32m" if line.startswith("+") and not line.startswith("+++") else "\033[90m"
+            lines.append(f"{color}{line.rstrip()}\033[0m")
+        return "\n".join(lines) or "(no changes)"
 
     def edit(self, old_text: str, new_text: str) -> str:
         """Replace exactly one occurrence in the previously selected file."""
-        if self.expected != "edit":
-            raise ValueError("edit() is not the required next workflow step")
         if self.selected is None:
             raise ValueError("select a file before edit")
         current = self.selected.read_text(encoding="utf-8")
         if current.count(old_text) != 1:
             raise ValueError("old_text must occur exactly once in selected file")
         self.selected.write_text(current.replace(old_text, new_text, 1), encoding="utf-8")
-        self.expected = None
-        self.workflow_complete = True
-        return f"edited {self.selected.relative_to(self.root).as_posix()}"
+        name = self.selected.relative_to(self.root).as_posix()
+        self.selected = None
+        return f"edited {name}"
 
-    def new(self, name: str) -> str:
-        """Choose a new relative file; content() must be called next."""
-        if self.workflow_complete or self.workflow_started:
-            raise ValueError("this turn already has a completed or active workflow")
+    def new(self, name: str, content: str) -> str:
+        """Create a new file with content; a single, non-composable operation."""
         path = (self.root / name).resolve()
         if not path.is_relative_to(self.root) or path.exists():
             raise ValueError("new file must be a non-existing path inside the workspace")
-        self.pending_new = path
-        self.selected = None
-        self.expected = "content"
-        self.workflow_started = True
-        return f"ready for content for {path.relative_to(self.root).as_posix()}; next call must be content()"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return f"created {path.relative_to(self.root).as_posix()}"
 
-    def content(self, content: str) -> str:
-        """Write content to the file selected by new()."""
-        if self.pending_new is None:
-            raise ValueError("call new(name) before content(content)")
-        self.pending_new.parent.mkdir(parents=True, exist_ok=True)
-        self.pending_new.write_text(content, encoding="utf-8")
-        name = self.pending_new.relative_to(self.root).as_posix()
-        self.pending_new = None
-        self.expected = None
-        self.workflow_complete = True
-        return f"created {name}"
+    def delete(self, path: str) -> str:
+        """Delete an existing file after explicit user confirmation."""
+        target = resolve(self.root, path)
+        name = target.relative_to(self.root).as_posix()
+        if not self.confirm(f"Delete {name}? [y/N] "):
+            self.selected = None
+            return f"deletion of {name} rejected"
+        target.unlink()
+        self.selected = None
+        return f"deleted {name}"
 
 
 def schemas(allowed: set[str] | None = None) -> list[dict]:
     """Return schemas, narrowed to the currently valid workflow step."""
     all_schemas = [
-        {"type": "function", "function": {"name": "select", "description": "Select an existing file before editing it.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+        {"type": "function", "function": {"name": "select", "description": "Select an existing file; then edit() it or close() to go back.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "edit", "description": "Edit the file selected by select().", "parameters": {"type": "object", "properties": {"old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["old_text", "new_text"]}}},
-        {"type": "function", "function": {"name": "new", "description": "Choose a new file, then call content().", "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}},
-        {"type": "function", "function": {"name": "content", "description": "Write content to the file chosen by new().", "parameters": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}}},
+        {"type": "function", "function": {"name": "close", "description": "Close the selected file and return to the previous step.", "parameters": {"type": "object", "properties": {}}}},
+        {"type": "function", "function": {"name": "new", "description": "Create a new file with content in a single operation.", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "content": {"type": "string"}}, "required": ["name", "content"]}}},
+        {"type": "function", "function": {"name": "delete", "description": "Delete an existing file; the user is asked for confirmation.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
     ]
     if allowed is None:
         return all_schemas
@@ -123,9 +134,10 @@ def schemas(allowed: set[str] | None = None) -> list[dict]:
 
 def dispatch(state: ToolState, name: str, arguments: str) -> str:
     """Dispatch one JSON tool call to the stateful protocol."""
-    if name not in {"select", "edit", "new", "content"}:
+    if name not in BASE_TOOLS | SELECTED_TOOLS:
         raise ValueError(f"unknown tool: {name}")
-    if state.expected is not None and name != state.expected:
-        raise ValueError(f"the next tool call must be {state.expected}()")
+    allowed = state.allowed_tools()
+    if name not in allowed:
+        raise ValueError(f"tool {name}() is not valid now; allowed: {', '.join(sorted(allowed))}")
     args = json.loads(arguments or "{}")
     return str(getattr(state, name)(**args))

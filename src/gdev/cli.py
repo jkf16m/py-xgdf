@@ -44,7 +44,7 @@ def _run_session(store: SessionStore, session, profile: AgentProfile | None = No
     try:
         count = len(files("."))
         print(f"forced reads: {count} files, oldest to newest by mtime")
-        print("tools: select -> edit | new -> content\n")
+        print("tools: select -> edit|close | new(name, content) | delete\n")
         run(".", session.prompt, chat, profile=profile)
     except ToolRejected as exc:
         rejected = True

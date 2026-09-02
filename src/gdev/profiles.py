@@ -27,11 +27,15 @@ def default_program(agent) -> None:
     agent.context.read_workspace()
     select_call = agent.tool("select")
     new_call = agent.tool("new")
-    agent.call(select_call, new_call)
+    delete_call = agent.tool("delete")
+    agent.call(select_call, new_call, delete_call)
     if select_call.used:
-        agent.call(agent.tool("edit"))
-    elif new_call.used:
-        agent.call(agent.tool("content"))
+        # After a select, only edit() or close() is valid.
+        edit_call = agent.tool("edit")
+        close_call = agent.tool("close")
+        agent.call(edit_call, close_call)
+        if close_call.used:
+            agent.call(agent.tool("select"), agent.tool("new"), agent.tool("delete"))
 
 
 def default_profile() -> AgentProfile:
@@ -41,8 +45,10 @@ def default_profile() -> AgentProfile:
         context=lambda root: context(root),
         system_prompt=(
             "You are a deterministic coding agent. The complete workspace was "
-            "read before this turn and is below. Use select(path) before edit; "
-            "use new(name) followed immediately by content(content) for new files. "
+            "read before this turn and is below. Use select(path) then edit(); "
+            "close() unselects and returns to the previous step. Use new(name, "
+            "content) to create a file in one operation. Use delete(path) to "
+            "remove a file (the user confirms). There is no shell access. "
             "Do not invent paths. Return a concise final report when finished."
         ),
         program=default_program,

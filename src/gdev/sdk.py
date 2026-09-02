@@ -143,8 +143,12 @@ def new() -> ToolRef:
     return ToolRef("new")
 
 
-def content() -> ToolRef:
-    return ToolRef("content")
+def close() -> ToolRef:
+    return ToolRef("close")
+
+
+def delete() -> ToolRef:
+    return ToolRef("delete")
 
 
 class Agent:
