@@ -691,14 +691,27 @@ if TYPE_CHECKING:
 
 @graph(name="xg-default")
 def _builtin_default(cfg: AgentConfig):
-    """The default graph: the constrained file-editing flow.
+    """The default graph: deterministic workspace read → prompt → file editing.
 
-    Composed from the reusable graphs in agent_graph: workspace read,
-    user prompt, agent loop with the file-editing tools.
+    Composed from the reusable graphs in agent_graph: the deterministic
+    file-read graph is prepended to the file-editing agent loop; the
+    user_prompt node resolves the request in between.
     """
-    from xg.agent_graph import build_default_graph
+    from langgraph.graph import StateGraph, START, END
+    from xg.agent_graph import (
+        GraphState, user_prompt_node,
+        deterministic_file_read_graph, build_file_edit_graph,
+    )
 
-    return build_default_graph(tools=["select", "edit", "new", "delete"])
+    graph = StateGraph(GraphState)
+    graph.add_node("deterministic_file_read", deterministic_file_read_graph())
+    graph.add_node("user_prompt", user_prompt_node)
+    graph.add_node("file_edit", build_file_edit_graph())
+    graph.add_edge(START, "deterministic_file_read")
+    graph.add_edge("deterministic_file_read", "user_prompt")
+    graph.add_edge("user_prompt", "file_edit")
+    graph.add_edge("file_edit", END)
+    return graph.compile()
 
 
 def _invoke_graph(graph, cfg: AgentConfig) -> int:
