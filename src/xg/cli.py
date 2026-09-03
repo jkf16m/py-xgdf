@@ -54,8 +54,9 @@ def _main_parser(resume_default=None) -> argparse.ArgumentParser:
                              "picks one (arguments are consumed from right "
                              "after the flag; put the prompt before --resume "
                              "to combine both)")
-    parser.add_argument("-w", "--workflow", nargs="?", const="xg-default", metavar="NAME",
-                        help="run a workflow (default: xg-default; aliases: default, cmd)")
+    parser.add_argument("-w", "--workflow", nargs="?", const="list", metavar="NAME",
+                        help="list workflows when used alone; otherwise run NAME "
+                             "(default: xg-default; aliases: default, cmd)")
     return parser
 
 
@@ -111,6 +112,16 @@ def _resume_config(resume_args: list[str], request: str):
     return AgentConfig(session=Session(name=name), resume=True, _runtime=runtime)
 
 
+def _list_workflows() -> int:
+    """Print every built-in and project workflow."""
+    from xg.workflows import list_workflows
+
+    print("available workflows:")
+    for workflow_name in list_workflows("."):
+        print(f"  {workflow_name}")
+    return 0
+
+
 def _default_workflow(args) -> int:
     """Bare `xg`: the default (or named) workflow, optionally resumed."""
     from xg.workflows import AgentConfig, WorkflowRuntime, run_workflow
@@ -142,6 +153,8 @@ def main() -> int:
     argv, resume_args = _extract_resume(argv)
     parser = _main_parser(resume_default=resume_args)
     args = parser.parse_args(argv)
+    if args.workflow in {"list", "ls"}:
+        return _list_workflows()
     return _default_workflow(args)
 
 
