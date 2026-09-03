@@ -47,6 +47,7 @@ from typing import Any, Callable
 from xg.config import xg_directories, load
 from xg.docs import documentation_for
 from xg.llm import chat
+from xg.pty import propose
 from xg.tools import ToolSpec
 from xg.workspace import context as workspace_context
 
@@ -500,6 +501,13 @@ class WorkflowRuntime:
         return workspace_context(self.root)
 
 
+def _builtin_cmd(cfg: AgentConfig) -> int:
+    """The built-in shell-command workflow (selected with ``-w xg-cmd``)."""
+    if not cfg.request and not cfg.prompt("your command request"):
+        return 0
+    return propose(cfg.request, chat)
+
+
 def _builtin_default(cfg: AgentConfig) -> int:
     """The default workflow: the constrained file-editing flow.
 
@@ -536,8 +544,10 @@ def last_session(root: str | Path) -> str | None:
 
 def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[AgentConfig], int]:
     """Load a workflow program by name; ``default`` is built in."""
-    if name == "default":
+    if name in {"default", "xg-default"}:
         return _builtin_default
+    if name in {"cmd", "xg-cmd"}:
+        return _builtin_cmd
     selected: Path | None = None
     for directory in xg_directories(cwd):
         path = directory / "workflows" / f"{name}.py"
@@ -576,7 +586,7 @@ def run_workflow(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = Non
 
 def list_workflows(cwd: str | Path = ".") -> list[str]:
     """Return available workflow names, built-ins first."""
-    names = ["default"]
+    names = ["xg-default", "xg-cmd"]
     seen = set()
     for directory in xg_directories(cwd):
         for path in sorted((directory / "workflows").glob("*.py")):

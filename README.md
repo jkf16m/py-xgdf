@@ -18,18 +18,23 @@ pip install -e .          # development install of this repo
 ## Usage
 
 ```bash
-xg                     # default workflow, interactive request
-xg PROMPT              # default workflow with a pre-loaded request
-xg workflow [NAME]     # run a named workflow; `workflow list` lists them
-xg cmd [PROMPT]        # propose a shell command and invoke it
+xg                     # xg-default workflow, interactive request
+xg PROMPT              # xg-default with a pre-loaded request
+xg -w                  # xg-default (same as bare xg)
+xg -w xg-default       # explicit default workflow (also: default)
+xg -w xg-cmd PROMPT    # shell-command workflow (also: cmd)
 xg init                # scaffold .xg/ in the current project
 xg --resume [PATH] [SESSION]
                        # replay a recorded session until its current state
 xg --help              # full CLI reference
 ```
 
-Run `xg --help` (or `xg <command> --help`) for every option, including
-per-workflow runs (`xg run PROMPT -w NAME`) and resume combinations.
+Workflows are selected with `-w`; there are no `workflow`, `cmd`, `run`, or
+`pty` CLI commands. The built-ins are `xg-default` (alias `default`) and
+`xg-cmd` (alias `cmd`). Additional workflows can be placed in
+`.xg/workflows/<name>.py`.
+
+Run `xg --help` for every option, including resume combinations.
 
 ## Workflows
 
