@@ -542,20 +542,16 @@ def last_session(root: str | Path) -> str | None:
     return max(candidates, key=lambda p: p.stat().st_mtime).removesuffix(".jsonl")
 
 
-def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[AgentConfig], int]:
-    """Load a workflow program by name; ``default`` is built in."""
-    if name in {"default", "xg-default"}:
-        return _builtin_default
-    if name in {"cmd", "xg-cmd"}:
-        return _builtin_cmd
+def _project_workflow(name: str, cwd: str | Path) -> Callable[[AgentConfig], int] | None:
+    """Load a project workflow, searching from least to most specific."""
     selected: Path | None = None
     for directory in xg_directories(cwd):
         path = directory / "workflows" / f"{name}.py"
         if path.is_file():
             selected = path
     if selected is None:
-        raise RuntimeError(f"workflow not found: {name}")
-    module_name = f"xg_workflow_{name}"
+        return None
+    module_name = f"xg_workflow_{name}_{abs(hash(str(selected)))}"
     spec = importlib.util.spec_from_file_location(module_name, selected)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load workflow: {selected}")
@@ -565,6 +561,29 @@ def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[AgentConfig], i
     if not callable(run):
         raise RuntimeError(f"workflow must define run(cfg): {selected}")
     return run
+
+
+def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[AgentConfig], int]:
+    """Load a workflow, resolving built-in aliases as one logical name.
+
+    ``default`` and ``xg-default`` are aliases for the same workflow. A
+    project-local ``default.py`` intentionally shadows that built-in for both
+    names. The same rule applies to the ``cmd``/``xg-cmd`` aliases.
+    """
+    aliases = {
+        "default": ("default", _builtin_default),
+        "xg-default": ("default", _builtin_default),
+        "cmd": ("cmd", _builtin_cmd),
+        "xg-cmd": ("cmd", _builtin_cmd),
+    }
+    if name in aliases:
+        local_name, builtin = aliases[name]
+        local = _project_workflow(local_name, cwd)
+        return local or builtin
+    workflow = _project_workflow(name, cwd)
+    if workflow is None:
+        raise RuntimeError(f"workflow not found: {name}")
+    return workflow
 
 
 def run_workflow(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = None) -> int:
@@ -586,7 +605,7 @@ def run_workflow(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = Non
 
 def list_workflows(cwd: str | Path = ".") -> list[str]:
     """Return available workflow names, built-ins first."""
-    names = ["xg-default", "xg-cmd"]
+    names = ["default", "xg-cmd"]
     seen = set()
     for directory in xg_directories(cwd):
         for path in sorted((directory / "workflows").glob("*.py")):

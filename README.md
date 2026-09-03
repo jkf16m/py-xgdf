@@ -21,7 +21,7 @@ pip install -e .          # development install of this repo
 xg                     # xg-default workflow, interactive request
 xg PROMPT              # xg-default with a pre-loaded request
 xg -w                  # list all available workflows
-xg -w xg-default       # explicit default workflow (also: default)
+xg -w default           # explicit default workflow (also: xg-default)
 xg -w xg-cmd PROMPT    # shell-command workflow (also: cmd)
 xg init                # scaffold .xg/ in the current project
 xg --resume [PATH] [SESSION]
