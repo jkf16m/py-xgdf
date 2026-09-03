@@ -21,7 +21,7 @@ class ToolRejected(Exception):
     """Raised when the user rejects a proposed tool call."""
 
 
-def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None, tools: list[str | ToolSpec] | None = None, session=None, prompt_appended: bool = False) -> str:
+def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None, tools: list[str | ToolSpec] | None = None, session=None, prompt_appended: bool = False, docs: str | None = None) -> str:
     """Run one prompt using a reusable, code-defined agent profile.
 
     ``session`` (a xg.workflows.Session) makes the conversation log itself
@@ -46,7 +46,7 @@ def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = N
         state = ToolState(root)
         if tools:
             state.restrict(tool_names)
-        return _run_logged(root, prompt, chat, profile, state, tool_specs, session, prompt_appended)
+        return _run_logged(root, prompt, chat, profile, state, tool_specs, session, prompt_appended, docs)
     profile = profile or (empty_profile("workflow") if history is not None else default_profile())
     if profile.program is not None:
         program = Agent(root, prompt, chat, profile.system_prompt)
@@ -88,7 +88,7 @@ def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = N
             messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": result})
 
 
-def _run_logged(root, prompt, chat, profile, state, tool_specs, session, prompt_appended) -> str:
+def _run_logged(root, prompt, chat, profile, state, tool_specs, session, prompt_appended, docs=None) -> str:
     """Agent loop whose conversation log IS the session file.
 
     Each model request is built by streaming the session file line-by-line;
@@ -97,7 +97,10 @@ def _run_logged(root, prompt, chat, profile, state, tool_specs, session, prompt_
     """
     profile = profile or default_profile()
     if not any(m.get("role") == "system" for m in session):  # O(1) RAM walk
-        session.add("system", profile.system_prompt)
+        system = profile.system_prompt
+        if docs:
+            system = f"{system}\n\n{docs}"  # injected xgdf reference
+        session.add("system", system)
     context = profile.context(root)
     if prompt_appended:
         session.add("user", f"PROFILE CONTEXT:\n{context}")

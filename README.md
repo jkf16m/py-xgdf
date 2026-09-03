@@ -53,6 +53,12 @@ cfg = AgentConfig(model="anthropic/claude-sonnet-4-5")
 run_workflow("my-flow", cfg=cfg)            # your settings
 ```
 
+## Injected documentation
+
+Executing inside a workspace, the framework reference (`xg.docs`) is
+automatically appended to the system message of every agent turn and is
+available as `cfg.documentation` for custom prompts.
+
 ## Session branches
 
 Sessions clone like branches: `cfg.fork()` derives a config whose session

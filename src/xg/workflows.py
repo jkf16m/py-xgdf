@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from xg.config import xg_directories, load
+from xg.docs import documentation
 from xg.llm import chat
 from xg.tools import ToolSpec
 from xg.workspace import context as workspace_context
@@ -273,6 +274,11 @@ class AgentConfig:
         """The workspace root this runtime executes in."""
         return self._rt().root
 
+    @property
+    def documentation(self) -> str:
+        """The injected xgdf reference (see xg.docs)."""
+        return self._rt().documentation
+
     def workflow(self, name: str) -> int:
         """Run another workflow (built-in or project) reusing this cfg.
 
@@ -298,6 +304,7 @@ class WorkflowRuntime:
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
         self.request: str = ""
+        self.documentation: str = documentation()  # framework reference, see docs.py
 
     def shell(self, command: str) -> int:
         """Run one trusted shell step as the workflow author, not the agent."""
@@ -333,6 +340,7 @@ class WorkflowRuntime:
                 str(self.root), prompt,
                 lambda messages, tools=None: chat(messages, tools, model=model),
                 tools=config.tools, session=session, prompt_appended=prompt_appended,
+                docs=self.documentation,
             )
         except ToolRejected as exc:
             print(f"\n[workflow] tool call rejected: {exc}")
