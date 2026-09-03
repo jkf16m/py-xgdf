@@ -22,7 +22,6 @@ xg                     # default workflow, interactive request
 xg PROMPT              # default workflow with a pre-loaded request
 xg workflow [NAME]     # run a named workflow; `workflow list` lists them
 xg cmd [PROMPT]        # propose a shell command and invoke it
-xg pty                 # interactive shell behind a pseudo-terminal
 xg init                # scaffold .xg/ in the current project
 xg --resume [PATH] [SESSION]
                        # replay a recorded session until its current state

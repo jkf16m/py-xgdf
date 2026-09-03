@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 """xg: the Generative Development Framework CLI.
 
-Commands (see `xg --help`):
-    xg [run] [PROMPT...] [--resume [PATH] [SESSION]] [-w NAME]
-                    run the default workflow (interactive without a PROMPT);
-                    --resume replays a recorded session until its current
-                    state, then goes live
+    xg                     run the default workflow (interactive)
+    xg PROMPT...           run the default workflow with a request
+    xg --resume [PATH] [SESSION]
+                           replay a recorded session until its current state
+    xg -w [NAME]           run (or list) a named workflow
     xg workflow [NAME|list]
-                    run a named workflow; without a name, list them
-    xg cmd [PROMPT] propose a shell command and invoke it (or inject it into
-                    the active --pty shell prompt); without PROMPT, use TTY input
-    xg pty          launch an interactive shell behind a pseudo-terminal
-    xg init         scaffold .xg/ in the current project
+                           same as -w, as an explicit command
+    xg cmd [PROMPT]        propose a shell command and invoke it
+    xg init                scaffold .xg/ in the current project
 
-`xg -w NAME`, `xg --pty` and bare `xg PROMPT...` keep working: arguments
-that start with a known command word route to that command, anything else
-routes to `run`.
+Every form has `--help` (`xg --help`, `xg workflow --help`, ...).
 """
 
 from __future__ import annotations
@@ -29,9 +25,7 @@ from prompt_toolkit.history import FileHistory
 
 from xg.init import initialize
 from xg.llm import chat
-from xg.pty import launch, propose
-
-_COMMANDS = ("run", "workflow", "cmd", "pty", "init")
+from xg.pty import propose
 
 
 def _version() -> str:
@@ -42,55 +36,57 @@ def _version() -> str:
         return "unknown"
 
 
-def _build_parser(resume_default=None) -> argparse.ArgumentParser:
+def _main_parser(resume_default=None) -> argparse.ArgumentParser:
+    """The bare-`xg` parser: default workflow + resume + named workflow."""
     parser = argparse.ArgumentParser(
-        prog="xg", description="the Generative Development Framework: a "
-        "deterministic coding agent driven by Python workflows.")
+        prog="xg",
+        description="the Generative Development Framework: a deterministic "
+                    "coding agent driven by Python workflows.",
+        epilog="commands:\n"
+               "  workflow  run or list a named workflow  (xg workflow --help)\n"
+               "  cmd       propose a shell command         (xg cmd --help)\n"
+               "  init      scaffold .xg/ here             (xg init --help)",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"xg {_version()}")
-    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
-
-    p_run = sub.add_parser("run", help="run the default workflow "
-                           "(the implicit command for `xg [PROMPT...]`)")
-    p_run.add_argument("prompt", nargs="*", help="pre-loaded request text")
-    p_run.add_argument("--resume", default=resume_default, action="store_true",
-                       help="replay a recorded session until its current "
-                       "state, then go live: no argument resumes the last "
-                       "session of the current path; PATH resumes another "
-                       "workspace's last session; PATH SESSION picks one "
-                       "(arguments are consumed from right after the flag; "
-                       "put the prompt before --resume to combine both)")
-    p_run.add_argument("-w", "--workflow", default=None, metavar="NAME",
-                       help="run a named workflow instead of `default`")
-
-    p_wf = sub.add_parser("workflow", help="run a named workflow "
-                          "(`workflow list` lists them)")
-    p_wf.add_argument("name", nargs="?", default="list",
-                      help="workflow name, or `list` (default: list)")
-
-    p_cmd = sub.add_parser("cmd", help="propose a shell command and invoke it")
-    p_cmd.add_argument("prompt", nargs="*", help="command request")
-
-    sub.add_parser("pty", help="launch an interactive shell behind a "
-                   "pseudo-terminal")
-    sub.add_parser("init", help="scaffold .xg/ in the current project")
+    parser.add_argument("prompt", nargs="*",
+                        help="request text for the default (or named) workflow")
+    parser.add_argument("--resume", action="store_true", default=resume_default,
+                        help="replay a recorded session until its current "
+                             "state, then go live: no arguments resume the "
+                             "last session of the current path; PATH resumes "
+                             "another workspace's last session; PATH SESSION "
+                             "picks one (arguments are consumed from right "
+                             "after the flag; put the prompt before --resume "
+                             "to combine both)")
+    parser.add_argument("-w", "--workflow", nargs="?", const="list", metavar="NAME",
+                        help="run a named workflow (`-w` alone lists them)")
     return parser
 
 
-def _route(argv: list[str]) -> list[str]:
-    """Prepend the implicit `run` command for legacy/loose invocations.
+def _workflow_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="xg workflow",
+        description="run a named workflow, or list the available ones")
+    parser.add_argument("name", nargs="?", default="list",
+                        help="workflow name, or `list` (default: list)")
+    return parser
 
-    `xg PROMPT...`, `xg -w NAME`, `xg --pty`, `xg --resume ...` all keep
-    working by routing to the matching real command.
-    """
-    if not argv or argv[0] not in _COMMANDS:
-        if set(argv) <= {"-h", "--help", "--version"}:
-            return argv  # top-level help/version belongs to the main parser
-        if argv and argv[0] == "--pty":
-            return ["pty"]
-        if argv and argv[0] in {"-w", "--workflow"}:
-            return ["workflow", *argv[1:]]
-        return ["run", *argv]
-    return argv
+
+def _cmd_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="xg cmd",
+        description="propose a shell command and invoke it; without a "
+                    "PROMPT, collect the request interactively")
+    parser.add_argument("prompt", nargs="*", help="command request")
+    return parser
+
+
+def _init_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="xg init",
+        description="scaffold .xg/ (config, workflows, session store) in "
+                    "the current project")
+    return parser
 
 
 def _extract_resume(argv: list[str]) -> tuple[list[str], list[str] | None]:
@@ -137,8 +133,8 @@ def _resume_config(resume_args: list[str], request: str):
     return AgentConfig(session=Session(name=name), resume=True, _runtime=runtime)
 
 
-def _run_command(args) -> int:
-    """`xg [run]`: the default workflow, optionally with --resume."""
+def _default_workflow(args) -> int:
+    """Bare `xg`: the default (or named) workflow, optionally resumed."""
     from xg.workflows import AgentConfig, WorkflowRuntime, run_workflow
 
     prompt = _input_text(args.prompt)
@@ -153,17 +149,17 @@ def _run_command(args) -> int:
         return 2
 
 
-def _workflow_command(args) -> int:
-    """`xg workflow [NAME|list]`."""
+def _named_workflow(name: str) -> int:
+    """`xg -w NAME` / `xg workflow NAME`."""
     from xg.workflows import list_workflows, run_workflow
 
-    if args.name in {"ls", "list"}:
+    if name in {"ls", "list"}:
         print("available workflows:")
         for workflow_name in list_workflows("."):
             print(f"  {workflow_name}")
         return 0
     try:
-        return run_workflow(args.name, ".")
+        return run_workflow(name, ".")
     except RuntimeError as exc:
         print(f"xg: {exc}", file=sys.stderr)
         return 2
@@ -207,26 +203,24 @@ def _cmd_command(args) -> int:
 
 def main() -> int:
     """Run the xgdf runtime: everything routes through a workflow."""
-    argv = _route(sys.argv[1:])
-    argv, resume_args = _extract_resume(argv)
-    parser = _build_parser(resume_default=resume_args)
-    args = parser.parse_args(argv)
+    argv = sys.argv[1:]
 
-    if args.command == "run":
-        return _run_command(args)
-    if args.command == "workflow":
-        return _workflow_command(args)
-    if args.command == "cmd":
-        return _cmd_command(args)
-    if args.command == "pty":
-        return launch()
-    if args.command == "init":
-        if len(sys.argv[1:]) != 1:
-            print("usage: xg init", file=sys.stderr)
-            return 2
+    # Explicit commands dispatch to their own parsers (each with --help).
+    if argv and argv[0] == "workflow":
+        return _named_workflow(_workflow_parser().parse_args(argv[1:]).name)
+    if argv and argv[0] == "cmd":
+        return _cmd_command(_cmd_parser().parse_args(argv[1:]))
+    if argv and argv[0] == "init":
+        _init_parser().parse_args(argv[1:])
         return initialize(".")
-    parser.print_help()
-    return 0
+
+    # Everything else is the bare-`xg` default workflow.
+    argv, resume_args = _extract_resume(argv)
+    parser = _main_parser(resume_default=resume_args)
+    args = parser.parse_args(argv)
+    if args.workflow:  # `-w` alone lists, `-w NAME` runs that workflow
+        return _named_workflow(args.workflow)
+    return _default_workflow(args)
 
 
 if __name__ == "__main__":
