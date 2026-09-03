@@ -65,8 +65,9 @@ def _git_patch(old: Path | None, new: Path, rel: str) -> str | None:
     if not patch.strip():  # exit code 1 means "differ", which is expected
         return None
     if old is not None:
-        patch = patch.replace(str(old), rel)  # git adds the a/ b/ prefixes
-    return patch.replace(str(new), rel)
+        # output is "a" + "/abs/path" (git adds the a/ b/ prefixes itself)
+        patch = patch.replace(str(old), f"/{rel}")
+    return patch.replace(str(new), f"/{rel}")
 
 
 def _fallback_patch(old_text: str, new_text: str, a_name: str, b_name: str) -> str:

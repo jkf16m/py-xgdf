@@ -132,11 +132,17 @@ keys it declares; dicts merge recursively, scalars and lists replace.
 {
   "model": "anthropic/claude-sonnet-4-5",
   "default_provider": "openrouter",
+  "diff_formatter": "delta",
   "providers": {
     "anthropic": {"api_key": "$(pass show anthropic/xg)"}
   }
 }
 ```
+
+`diff_formatter` (or the `XG_DIFF_FORMATTER` env var) names a shell command
+that receives proposed tool-call patches on stdin — e.g. `delta` or
+`diffr` — and prints them with nicer colors. Without it, xg applies simple
+built-in ANSI coloring.
 
 ## Providers
 
