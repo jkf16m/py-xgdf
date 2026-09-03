@@ -55,9 +55,13 @@ run_workflow("my-flow", cfg=cfg)            # your settings
 
 ## Injected documentation
 
-Executing inside a workspace, the framework reference (`xg.docs`) is
-automatically appended to the system message of every agent turn and is
-available as `cfg.documentation` for custom prompts.
+Injection is location-dependent and happens at runtime, before any
+workflow code runs: running inside `.xg/workflows` injects the full
+workflow-authoring reference (tool state machine, `run(cfg)` API);
+anywhere else in a workspace injects documentation about `config.json`
+composition plus a superficial workflows overview. The reference lands
+in every session window (once, deduped) and is available as
+`cfg.documentation`.
 
 ## Session branches
 

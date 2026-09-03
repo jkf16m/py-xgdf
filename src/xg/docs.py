@@ -1,15 +1,24 @@
-"""Injected xgdf documentation.
+"""Injected xgdf documentation — location-dependent.
 
-When the runner executes a workflow inside a workspace, the framework's own
-reference is attached to the runtime and appended to the system message of
-agent turns, so the model knows the primitives it is being offered — the
-tool names, the state machine, and the fact that it cannot run shell.
+The runtime computes what to inject from *where execution happens*, before
+any workflow runs (this is part of the xgdf runtime, not workflow code):
+
+* cwd inside ``.xg/workflows``  → the full workflow-authoring reference
+  (the ``run(cfg)`` API, the tool state machine, the no-shell rule).
+* anywhere else in a workspace  → documentation about ``config.json``
+  composition (layers, providers, API keys) plus a superficial overview of
+  workflows.
+
+The chosen reference lands in every session window created by the runtime
+(once per window, deduped), and is available as ``cfg.documentation``.
 """
 
 from __future__ import annotations
 
-DOCUMENTATION = """\
-# xgdf reference (Generative Development Framework)
+from pathlib import Path
+
+WORKFLOW_REFERENCE = """\
+# xgdf reference — workflows
 
 You are running as the agent step of an xgdf workflow. You are NOT a general
 shell agent: your only capabilities are the tools listed below. There is no
@@ -31,7 +40,40 @@ Workflows around you are deterministic Python (`run(cfg)`); inference is a
 deliberate step. Be concise and prefer small, reviewable operations.\
 """
 
+WORKFLOW_OVERVIEW = """\
+Workflows are Python files under `.xg/workflows/<name>.py` exposing
+`run(cfg)`; the xg runner (or a parent workflow) passes the cfg. List them
+with `xg -w`, run one with `xg -w NAME`.\
+"""
+
+CONFIG_REFERENCE = """\
+# xgdf reference — configuration
+
+`config.json` composes by location, least specific first:
+* `~/.xg/config.json` — user-level defaults
+* `<any ancestor>/.xg/config.json` — intermediate layers
+* `.xg/config.json` (cwd) — project settings, wins
+
+A layer only sets the keys it declares; dicts merge recursively, scalars and
+lists replace. Relevant keys:
+* `model` — e.g. "openrouter/@preset/mimo" or "anthropic/claude-..."
+* `default_provider` — when a model has no known provider prefix
+* `providers.<name>.api_key` — a bash command "$(pass show ...)", an
+  "env:VAR" reference, or a literal key
+
+{overview}\
+"""
+
+
+def documentation_for(path: str | Path) -> str:
+    """Return the reference matching where execution happens."""
+    resolved = Path(path).resolve()
+    parts = resolved.parts
+    if parts[-1] == "workflows" and ".xg" in parts:
+        return WORKFLOW_REFERENCE
+    return CONFIG_REFERENCE.format(overview=WORKFLOW_OVERVIEW)
+
 
 def documentation() -> str:
-    """Return the framework reference injected into agent system messages."""
-    return DOCUMENTATION
+    """Back-compat alias: general (workspace-level) documentation."""
+    return CONFIG_REFERENCE.format(overview=WORKFLOW_OVERVIEW)
