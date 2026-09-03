@@ -18,12 +18,19 @@ pip install -e .          # development install of this repo
 ## Usage
 
 ```bash
-xg --pty         # interactive shell behind a pseudo-terminal
-xg PROMPT        # create a new inactive coding-agent session
-xg c [TEXT]      # append input to the latest inactive session
-xg r | xg run    # execute the latest inactive session
-xg -w            # list workflows; xg -w NAME runs one
+xg                     # default workflow, interactive request
+xg PROMPT              # default workflow with a pre-loaded request
+xg workflow [NAME]     # run a named workflow; `workflow list` lists them
+xg cmd [PROMPT]        # propose a shell command and invoke it
+xg pty                 # interactive shell behind a pseudo-terminal
+xg init                # scaffold .xg/ in the current project
+xg --resume [PATH] [SESSION]
+                       # replay a recorded session until its current state
+xg --help              # full CLI reference
 ```
+
+Run `xg --help` (or `xg <command> --help`) for every option, including
+per-workflow runs (`xg run PROMPT -w NAME`) and resume combinations.
 
 ## Workflows
 
