@@ -641,17 +641,23 @@ def _builtin_cmd(cfg: AgentConfig) -> int:
     return 0
 
 
-from typing import TypedDict
-from langgraph.graph import StateGraph, START, END
-from langchain_core.runnables import RunnableConfig
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import TypedDict
+    from langgraph.graph import StateGraph
+    from langchain_core.runnables import RunnableConfig
 
 
-class DefaultWorkflowState(TypedDict):
-    request: str
-    response: str
+def _make_default_state():
+    from typing import TypedDict
+    class DefaultWorkflowState(TypedDict):
+        request: str
+        response: str
+    return DefaultWorkflowState
 
 
-def _read_workspace(state: DefaultWorkflowState, config: RunnableConfig):
+def _read_workspace(state, config):
     from xg.utils import read_workspace
     cfg: AgentConfig = config["configurable"]["cfg"]
     session = cfg.get_session()
@@ -659,7 +665,7 @@ def _read_workspace(state: DefaultWorkflowState, config: RunnableConfig):
     return state
 
 
-def _prompt_user(state: DefaultWorkflowState, config: RunnableConfig):
+def _prompt_user(state, config):
     cfg: AgentConfig = config["configurable"]["cfg"]
     session = cfg.get_session()
     if not cfg.request:
@@ -672,7 +678,7 @@ def _prompt_user(state: DefaultWorkflowState, config: RunnableConfig):
     return {"request": cfg.request}
 
 
-def _run_agent(state: DefaultWorkflowState, config: RunnableConfig):
+def _run_agent(state, config):
     cfg: AgentConfig = config["configurable"]["cfg"]
     if not state.get("request"):
         return {"response": ""}
@@ -682,9 +688,12 @@ def _run_agent(state: DefaultWorkflowState, config: RunnableConfig):
     return {"response": result}
 
 
-def _build_default_graph() -> StateGraph:
+def _build_default_graph(checkpointer=None):
     """Build the default workflow graph."""
-    graph = StateGraph(DefaultWorkflowState)
+    from langgraph.graph import StateGraph, START, END
+
+    State = _make_default_state()
+    graph = StateGraph(State)
     graph.add_node("read_workspace", _read_workspace)
     graph.add_node("prompt_user", _prompt_user)
     graph.add_node("run_agent", _run_agent)
@@ -692,18 +701,14 @@ def _build_default_graph() -> StateGraph:
     graph.add_edge("read_workspace", "prompt_user")
     graph.add_edge("prompt_user", "run_agent")
     graph.add_edge("run_agent", END)
-    return graph
-
-
-# Compiled graph, ready for composition
-DEFAULT_WORKFLOW = _build_default_graph().compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def _builtin_default(cfg: AgentConfig) -> int:
     """The default workflow: the constrained file-editing flow.
 
-    Sets up the session and invokes the compiled graph.
-    The graph can be composed with other graphs or used standalone.
+    Uses langgraph checkpointer for resumable execution.
+    Each run gets a unique thread_id; resume uses the same thread_id.
     """
     import uuid
 
@@ -711,8 +716,26 @@ def _builtin_default(cfg: AgentConfig) -> int:
     if not session.path:
         session.name = f"run-{uuid.uuid4().hex[:8]}"
 
-    config: RunnableConfig = {"configurable": {"cfg": cfg}}
-    DEFAULT_WORKFLOW.invoke({"request": "", "response": ""}, config=config)
+    # Use session name as thread_id for resumability
+    thread_id = session.name
+
+    # Create checkpointer for this workspace
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    checkpointer_path = cfg.root / ".xg" / "checkpoints.db"
+    with SqliteSaver.from_conn_string(str(checkpointer_path)) as checkpointer:
+        graph = _build_default_graph(checkpointer)
+
+        from langchain_core.runnables import RunnableConfig
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id, "cfg": cfg}}
+
+        # Check if resuming from existing checkpoint
+        if cfg.resume:
+            # Get existing state
+            existing = graph.get_state(config)
+            if existing.values:
+                print(f"[resume] resuming from checkpoint: {existing.values}")
+
+        graph.invoke({"request": "", "response": ""}, config=config)
     return 0
 
 
