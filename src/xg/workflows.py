@@ -37,6 +37,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -120,6 +121,40 @@ class Session:
             result = message
         return result
 
+    def clone(self, name: str | None = None) -> "Session":
+        """Return an independent copy of this window — a branch point.
+
+        The clone shares nothing with the original: new appends go to the
+        clone's file only. Without ``name`` the clone is named
+        ``<original>-clone-<suffix>``. A bound session's file is copied
+        (the clone is already bound to the same workspace); an unbound
+        one copies its buffered writes.
+        """
+        import uuid
+
+        if name is None:
+            base = re.sub(r"-clone-[0-9a-f]{6}$", "", self.name)
+            name = f"{base}-clone-{uuid.uuid4().hex[:6]}"
+        clone = Session(name=name)
+        if self.path is not None and self.path.exists():
+            clone.bind(self.path.parent.parent.parent)  # .../.xg/sessions -> root
+            shutil.copyfile(self.path, clone.path)      # plain byte copy
+            for message in self._buffer:
+                clone.append(message)
+        else:
+            clone._buffer = list(self._buffer)
+        return clone
+
+    def delete(self) -> None:
+        """Remove this session's file (a temporary branch's cleanup).
+
+        The session becomes empty and re-binds as a fresh file on next use.
+        """
+        if self.path is not None:
+            self.path.unlink(missing_ok=True)
+        self.path = None
+        self._buffer = []
+
     def snapshot(self) -> list[dict]:
         """Materialize the window (debugging only; inference never does)."""
         return list(self)
@@ -181,6 +216,23 @@ class AgentConfig:
             model=model if model is not None else self.model,
             session=session if session is not None else self.session,
             tools=tools if tools is not None else self.tools,
+            _runtime=self._runtime,
+        )
+
+    def fork(self, name: str | None = None) -> "AgentConfig":
+        """Derive a config whose session is a clone of this one.
+
+        A temporary branch: the forked config shares the model, tools, and
+        runtime with this one, but its session is an independent copy —
+        steps run on the fork never write to the original window. Call
+        ``cfg.fork().session.delete()`` when the branch outlives its use,
+        or ``cfg.fork(name="experiment")`` to pin the branch name.
+        """
+        session = self.get_session().clone(name)
+        return AgentConfig(
+            model=self.model,
+            session=session,
+            tools=self.tools,
             _runtime=self._runtime,
         )
 

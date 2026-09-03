@@ -53,6 +53,21 @@ cfg = AgentConfig(model="anthropic/claude-sonnet-4-5")
 run_workflow("my-flow", cfg=cfg)            # your settings
 ```
 
+## Session branches
+
+Sessions clone like branches: `cfg.fork()` derives a config whose session
+is an independent copy of the current window — model, tools, and runtime
+are shared, but forked steps never write to the original:
+
+```python
+branch = cfg.fork(name="experiment")
+branch.agent("try the risky refactor")     # its own window copy
+branch.session.delete()                     # discard the branch
+```
+
+`Session.clone(name=None)` (auto-names `<original>-clone-<suffix>`) and
+`Session.delete()` work on sessions directly too.
+
 ## Configuration
 
 `xg` composes `config.json` from `~/.xg/` and every `<ancestor>/.xg/`
