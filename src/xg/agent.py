@@ -12,9 +12,10 @@ from typing import Callable
 
 from prompt_toolkit import prompt as line_prompt
 
-from xg.profiles import AgentProfile, default_profile, empty_profile
+from xg.profiles import AgentProfile, command_profile, default_profile, empty_profile
 from xg.sdk import Agent
 from xg.tools import ToolState, ToolSpec, dispatch, schemas
+from xg.utils import format_patch, tool_patch
 
 
 class ToolRejected(Exception):
@@ -73,12 +74,9 @@ def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = N
             fn = call.get("function") or {}
             name = fn.get("name", "")
             print(f"\nProposed tool call: {name}({fn.get('arguments', '{}')})")
-            if name == "edit":
-                try:
-                    args = json.loads(fn.get("arguments", "{}"))
-                    print(state.preview_edit(args.get("old_text", ""), args.get("new_text", "")))
-                except Exception as exc:
-                    print(f"preview unavailable: {exc}")
+            patch = tool_patch(state, name, fn.get("arguments", "{}"))
+            if patch:
+                print(format_patch(patch))
             if not _accept_tool():
                 raise ToolRejected(name)
             try:
@@ -114,12 +112,9 @@ def _run_logged(root, prompt, chat, profile, state, tool_specs, session, prompt_
             fn = call.get("function") or {}
             name = fn.get("name", "")
             print(f"\nProposed tool call: {name}({fn.get('arguments', '{}')})")
-            if name == "edit":
-                try:
-                    args = json.loads(fn.get("arguments", "{}"))
-                    print(state.preview_edit(args.get("old_text", ""), args.get("new_text", "")))
-                except Exception as exc:
-                    print(f"preview unavailable: {exc}")
+            patch = tool_patch(state, name, fn.get("arguments", "{}"))
+            if patch:
+                print(format_patch(patch))
             if not _accept_tool():
                 session.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                 "content": f"user rejected the tool call: {name}"})
