@@ -605,7 +605,9 @@ def run_workflow(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = Non
 
 def list_workflows(cwd: str | Path = ".") -> list[str]:
     """Return available workflow names, built-ins first."""
-    names = ["default", "xg-cmd"]
+    # Packaged workflows are listed by their canonical xg-* names. Their
+    # short names are invocation aliases, not additional workflows.
+    names = ["xg-default", "xg-cmd"]
     seen = set()
     for directory in xg_directories(cwd):
         for path in sorted((directory / "workflows").glob("*.py")):

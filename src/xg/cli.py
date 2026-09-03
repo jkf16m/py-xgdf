@@ -38,7 +38,7 @@ def _main_parser(resume_default=None) -> argparse.ArgumentParser:
         description="the Generative Development Framework: a deterministic "
                     "coding agent driven by Python workflows.",
         epilog="built-in workflows:\n"
-               "  default     constrained coding workflow (also: xg-default)\n"
+               "  xg-default  constrained coding workflow (also: default)\n"
                "  xg-cmd      shell command workflow (also: cmd)\n\n"
                "commands:\n"
                "  init        scaffold .xg/ here (xg init --help)",
