@@ -78,6 +78,29 @@ branch.session.delete()                     # discard the branch
 `Session.clone(name=None)` (auto-names `<original>-clone-<suffix>`) and
 `Session.delete()` work on sessions directly too.
 
+## Resuming sessions
+
+A session is an event log. While a workflow runs, the runtime records two
+kinds of events into the JSONL: every `cfg.prompt()` answer and a completion
+marker for every finished agent turn. Metadata lines (`xgdf-*`) are invisible
+to the model — they never enter a request body.
+
+Because workflows are deterministic, resuming means **replaying**:
+
+```
+xg --resume                    # resume the default session (session)
+xg --resume mysession          # resume a named session
+xg --resume mysession -w fix   # resume with a named workflow
+```
+
+The workflow re-executes; each `prompt()` and `agent()` call consumes the
+next recorded event instead of asking you or paying for inference. When the
+cursor reaches the session's current state — or the recording diverges (you
+changed the workflow) — everything goes live again. Interrupted turns have
+no completion marker, so they simply re-run.
+
+Programmatically: `AgentConfig(resume=True, session=Session(name=...))`.
+
 ## Configuration
 
 `xg` composes `config.json` from `~/.xg/` and every `<ancestor>/.xg/`

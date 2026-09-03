@@ -101,8 +101,8 @@ class Session:
         for message in more:
             self.append(message)
 
-    def __iter__(self):
-        """Walk the window oldest-first; one message in RAM at a time."""
+    def _raw(self):
+        """Walk every stored line — messages AND xgdf step markers."""
         if self.path is not None and self.path.exists():
             with self.path.open("r", encoding="utf-8") as handle:
                 for line in handle:
@@ -110,6 +110,44 @@ class Session:
                     if line:
                         yield json.loads(line)
         yield from self._buffer
+
+    def __iter__(self):
+        """Walk the window oldest-first; one message in RAM at a time.
+
+        xgdf metadata lines (step completion markers, recorded prompts) are
+        resume bookkeeping; inference never sees them.
+        """
+        for entry in self._raw():
+            if not any(key.startswith("xgdf-") for key in entry):
+                yield entry
+
+    def events(self):
+        """Yield recorded resume events in order.
+
+        Two event kinds:
+        * ("prompt", text)         — a recorded prompt() answer
+        * ("step", hash, segment)  — a completed agent turn; segment is the
+          messages since the previous event boundary (request, context,
+          assistant replies, tool results)
+        """
+        segment: list[dict] = []
+        for entry in self._raw():
+            if "xgdf-prompt" in entry:
+                yield ("prompt", entry["xgdf-prompt"], None)
+            elif "xgdf-step" in entry:
+                yield ("step", entry["xgdf-step"].get("hash", ""), segment)
+                segment = []
+            else:
+                segment.append(entry)
+
+    def completed_step(self, step_hash: str) -> str | None:
+        """Return the final assistant text of a completed step by hash."""
+        for kind, value, segment in self.events():
+            if kind == "step" and value == step_hash:
+                for message in reversed(segment or []):
+                    if message.get("role") == "assistant":
+                        return message.get("content", "")
+        return None
 
     def first(self) -> dict | None:
         for message in self:
@@ -179,6 +217,7 @@ class AgentConfig:
     model: str | None = None
     session: Session | None = None
     tools: list[str | ToolSpec] | None = None
+    resume: bool = False  # replay completed agent steps instead of re-running
     _runtime: "WorkflowRuntime | None" = None  # attached by the runner
 
     _KNOWN_TOOLS = frozenset({"select", "edit", "close", "new", "delete"})
@@ -204,7 +243,7 @@ class AgentConfig:
         return self.session
 
     def branch(self, model: str | None = None, session: Session | None = None,
-               tools: list[str | ToolSpec] | None = None, **more) -> "AgentConfig":
+               tools: list[str | ToolSpec] | None = None, resume: bool | None = None, **more) -> "AgentConfig":
         """Derive a config with only the given fields replaced.
 
         Fields left as None are inherited from this config; the session
@@ -217,6 +256,7 @@ class AgentConfig:
             model=model if model is not None else self.model,
             session=session if session is not None else self.session,
             tools=tools if tools is not None else self.tools,
+            resume=resume if resume is not None else self.resume,
             _runtime=self._runtime,
         )
 
@@ -258,7 +298,8 @@ class AgentConfig:
 
     def prompt(self, invitation: str = "describe what you want", session: Session | None = None) -> bool:
         """Yield control to the user; False on empty input/EOF."""
-        return self._rt().prompt(invitation, session=session if session is not None else self.session)
+        return self._rt().prompt(invitation, session=session if session is not None else self.session,
+                                 resume=self.resume)
 
     def workspace(self) -> str:
         """Render the deterministic whole-workspace context."""
@@ -305,6 +346,46 @@ class WorkflowRuntime:
         self.root = Path(root).resolve()
         self.request: str = request  # pre-loaded request (e.g. `xg "..."`)
         self.documentation: str = documentation_for(self.root)  # location-dependent, see docs.py
+        # Resume playback: events from the recorded session, consumed in order.
+        self._resume_session: Session | None = None
+        self._resume_events: list = []
+        self._resume_cursor: int = 0
+
+    def _begin_resume(self, session: Session) -> None:
+        """Start playback for a session (once): snapshot its event list."""
+        if self._resume_session is not session:
+            self._resume_session = session
+            self._resume_events = list(session.events())
+            self._resume_cursor = 0
+
+    def _take_event(self, session: Session, kind: str, step_hash: str | None = None):
+        """Consume the next recorded event for a resumed session.
+
+        Returns the event payload if the next event matches (prompt text or
+        final assistant text of the step); otherwise ends playback (cursor
+        jumps to the end) and returns None — everything goes live.
+        """
+        self._begin_resume(session)
+        if self._resume_cursor >= len(self._resume_events):
+            return None  # current state reached: live from here
+        event = self._resume_events[self._resume_cursor]
+        if kind == "prompt" and event[0] == "prompt":
+            self._resume_cursor += 1
+            return event[1]
+        if kind == "step" and event[0] == "step" and event[1] == step_hash:
+            self._resume_cursor += 1
+            for message in reversed(event[2]):
+                if message.get("role") == "assistant":
+                    return message.get("content", "")
+            return ""
+        # diverged (different event kind or hash): stop replaying
+        self._resume_cursor = len(self._resume_events)
+        return None
+
+    def _complete_step(self, session: Session, step_hash: str) -> None:
+        """Mark a step as completed (later marker wins in completed_step)."""
+        if session.path is not None:
+            session.append({"xgdf-step": {"hash": step_hash, "complete": True}})
 
     def _inject_documentation(self, session: Session) -> None:
         """Append the xgdf reference to a session window once.
@@ -341,6 +422,23 @@ class WorkflowRuntime:
             session = Session(name=f"temp-{uuid.uuid4().hex[:8]}")
         session.bind(self.root)
         self._inject_documentation(session)   # the window itself carries the docs
+
+        # Step resume: a completed step with the same hash is replayed from
+        # the window instead of paying for inference again.
+        import hashlib
+
+        tool_names = "".join(sorted(
+            spec.name if isinstance(spec, ToolSpec) else str(spec)
+            for spec in (config.tools or [])
+        ))
+        step_hash = hashlib.sha1(
+            f"{model}\0{tool_names}\0{prompt}".encode()
+        ).hexdigest()[:12]
+        if config.resume and not ephemeral:
+            replayed = self._take_event(session, "step", step_hash)
+            if replayed is not None:
+                print(f"\n[workflow] agent step replayed from session ({session.name})")
+                return replayed
         prompt_appended = (
             not ephemeral
             and session.last() == {"role": "user", "content": prompt}
@@ -351,11 +449,13 @@ class WorkflowRuntime:
         from xg.agent import ToolRejected, run as agent_run
 
         try:
-            return agent_run(
+            result = agent_run(
                 str(self.root), prompt,
                 lambda messages, tools=None: chat(messages, tools, model=model),
                 tools=config.tools, session=session, prompt_appended=prompt_appended,
             )
+            self._complete_step(session, step_hash)
+            return result
         except ToolRejected as exc:
             print(f"\n[workflow] tool call rejected: {exc}")
             return f"tool call rejected: {exc}"
@@ -363,13 +463,22 @@ class WorkflowRuntime:
             if ephemeral and session.path is not None and session.path.exists():
                 session.path.unlink()
 
-    def prompt(self, invitation: str = "describe what you want", session: Session | None = None) -> bool:
+    def prompt(self, invitation: str = "describe what you want", session: Session | None = None,
+               resume: bool = False) -> bool:
         """Yield control to the user; returns False on empty input/EOF.
 
         With ``session``, the user request is appended to that session's
         context window immediately, so the next agent() call with the same
-        session sees it.
+        session sees it. With ``resume``, a recorded prompt answer is
+        replayed instead of asking the user again.
         """
+        if resume and session is not None:
+            recorded = self._take_event(session, "prompt")
+            if recorded is not None:
+                print(f"\n\033[90m[resume] replaying recorded answer: {recorded}\033[0m")
+                self.request = recorded
+                return True
+            # no more recorded prompts: ask for real (live from here)
         try:
             text = input(f"\n{invitation}: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -380,6 +489,7 @@ class WorkflowRuntime:
         self.request = text
         if session is not None:
             session.add("user", text)
+            session.append({"xgdf-prompt": text})  # resume event
         return True
 
     def workspace(self) -> str:

@@ -5,6 +5,9 @@ Commands:
     xg              run the default workflow (interactive)
     xg PROMPT       run the default workflow with a request
     xg -w NAME      run a named workflow; -w alone lists them
+    xg --resume [SESSION] [--workflow NAME | PROMPT]
+                    resume a recorded session: prompts and agent turns are
+                    replayed from the JSONL until current state, then live
     xg init         scaffold .xg/ in the current project
     xg --pty        launch an interactive shell behind a pseudo-terminal
     xg cmd [PROMPT] propose a shell command and invoke it (or inject it into
@@ -62,6 +65,16 @@ def main() -> int:
     """Run the xgdf runtime: everything routes through a workflow."""
     argv = sys.argv[1:]
 
+    # `--resume [SESSION]` can combine with `-w NAME` or a request; pull it
+    # out first so the remaining argv keeps its old shape.
+    resume_session: str | None = None
+    if "--resume" in argv:
+        index = argv.index("--resume")
+        argv.pop(index)
+        resume_session = "session"
+        if index < len(argv) and not argv[index].startswith("-"):
+            resume_session = argv.pop(index)
+
     if argv and argv[0].lower() == "init":
         if len(argv) != 1:
             print("usage: xg init", file=sys.stderr)
@@ -90,9 +103,13 @@ def main() -> int:
             print("usage: xg --workflow [NAME|list]", file=sys.stderr)
             return 2
         try:
-            from xg.workflows import run_workflow
+            from xg.workflows import AgentConfig, Session, WorkflowRuntime, run_workflow
 
-            return run_workflow(argv[0], ".")
+            cfg = AgentConfig()
+            if resume_session:
+                cfg = AgentConfig(session=Session(name=resume_session), resume=True,
+                                  _runtime=WorkflowRuntime("."))
+            return run_workflow(argv[0], ".", cfg=cfg)
         except RuntimeError as exc:
             print(f"xg: {exc}", file=sys.stderr)
             return 2
@@ -109,12 +126,14 @@ def main() -> int:
     # Everything else routes through the default workflow: bare `xg` asks
     # for a request interactively; `xg PROMPT...` runs with the request
     # pre-loaded. Same workflow, same session schema as `xg -w default`.
-    from xg.workflows import AgentConfig, WorkflowRuntime, run_workflow
+    from xg.workflows import AgentConfig, Session, WorkflowRuntime, run_workflow
 
     prompt = _input_text(argv)
     runtime = WorkflowRuntime(".", request=prompt)
+    cfg = (AgentConfig(session=Session(name=resume_session), resume=True, _runtime=runtime)
+           if resume_session else AgentConfig(_runtime=runtime))
     try:
-        return run_workflow("default", ".", cfg=AgentConfig(_runtime=runtime))
+        return run_workflow("default", ".", cfg=cfg)
     except RuntimeError as exc:
         print(f"xg: {exc}", file=sys.stderr)
         return 2
