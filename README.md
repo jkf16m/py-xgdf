@@ -32,6 +32,7 @@ xg                    # interactive: type your request, agent edits files
 
 ## Security model
 
+* The default workflow performs a deterministic **workspace read**: every text file is injected as one simulated `read` tool call (with a deterministic `XG_{ID}` tool-call id) plus its tool result, exactly once per session window
 * The default workflow reads your **entire workspace** (text files, oldest
   first, gitignored paths excluded) and sends it to the configured model
   provider. Do not run xg on workspaces you would not share with that

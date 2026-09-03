@@ -12,33 +12,78 @@ not hidden behavior inside cfg.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
 
-from xg.workspace import context as _workspace_context
+from xg.workspace import files as _workspace_files
 
-# Dedupe marker: a window that already carries a read never gets another.
-WORKSPACE_MARKER = "# xgdf workspace read"
+# Deterministic read tool-call id prefix: XG_{ID} where ID is derived from
+# the file's workspace-relative path. Seeing any XG_* read call id in the
+# window means the deterministic read already happened.
+READ_ID_PREFIX = "XG_"
+WORKSPACE_MARKER = "# xgdf workspace read"  # legacy one-shot message marker
+
+
+def _read_id(rel: str) -> str:
+    """Deterministic tool-call id for one simulated read of *rel*."""
+    return f"{READ_ID_PREFIX}{hashlib.sha1(rel.encode('utf-8')).hexdigest()[:12]}"
 
 
 def read_workspace(session, root: str | Path) -> str:
-    """Append the deterministic whole-workspace read to a session window.
+    """Perform the deterministic whole-workspace read inside a session window.
 
-    Reads every readable text file below ``root`` (m-time ordered, hidden
-    metadata and gitignored paths excluded) and appends the rendered
-    context to ``session`` as one system message — exactly once per window.
-    The intended use is the default workflow's start step; workflows that
-    don't need file context simply never call this.
+    Every readable text file below ``root`` (m-time ordered, hidden
+    metadata and gitignored paths excluded) becomes one *simulated* read
+    tool call: a single assistant message carrying one ``read`` tool call
+    per file, each with a deterministic ``XG_{ID}`` tool-call id derived
+    from the file's workspace-relative path, followed by one tool result
+    per call holding the file's content. Nothing is executed — the calls
+    and results are written straight into the session log.
 
-    Returns the rendered context string.
+    This happens exactly once per window: any existing ``XG_*`` read
+    tool-call id (or legacy one-shot workspace message) skips the read.
+
+    Returns the number of files read (0 when deduped).
     """
-    context = _workspace_context(root)
-    if not any(WORKSPACE_MARKER in m.get("content", "") for m in session):
-        session.add("system", f"{WORKSPACE_MARKER}\n{context}")
-    return context
+    for message in session:  # O(1) RAM walk, tool results stream past
+        if WORKSPACE_MARKER in str(message.get("content") or ""):
+            return 0
+        for call in message.get("tool_calls") or []:
+            if str(call.get("id") or "").startswith(READ_ID_PREFIX):
+                return 0
+    entries = _workspace_files(root)
+    if not entries:
+        return 0
+    session.append(
+        {
+            "role": "assistant",
+            "content": "(deterministic workspace read)",
+            "tool_calls": [
+                {
+                    "id": _read_id(entry.path),
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments": json.dumps({"path": entry.path}),
+                    },
+                }
+                for entry in entries
+            ],
+        }
+    )
+    for entry in entries:
+        session.append(
+            {
+                "role": "tool",
+                "tool_call_id": _read_id(entry.path),
+                "content": f"=== {entry.path} | mtime_ns: {entry.mtime_ns} ===\n{entry.content}",
+            }
+        )
+    return len(entries)
 
 
 # ---- git patches for unapplied tool calls -------------------------------
