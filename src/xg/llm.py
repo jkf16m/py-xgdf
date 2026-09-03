@@ -7,7 +7,6 @@ Public API:
 import http.client
 import json
 import os
-import subprocess
 import sys
 import time
 
@@ -15,17 +14,18 @@ from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 
+from xg.config import load
+from xg.providers import for_model, resolve_key
 
-def _api_key() -> str:
-    """Read the OpenRouter key from the configured pass entry."""
-    try:
-        result = subprocess.run(["pass", "show", "pi/openrouter"], capture_output=True, text=True, check=True)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError("could not read API key with `pass show pi/openrouter`") from exc
-    key = result.stdout.splitlines()[0].strip() if result.stdout else ""
-    if not key:
-        raise RuntimeError("`pass show pi/openrouter` returned an empty API key")
-    return key
+
+def _resolve_model_and_provider(model: str | None):
+    """Resolve the model string and provider from args, env, and config."""
+    config = load() if os.environ.get("XG_NO_CONFIG") != "1" else {}
+    if not model:
+        model = config.get("model") or os.environ.get("XG_MODEL", "@preset/mimo")
+    provider, model_id = for_model(model, config.get("default_provider", "openrouter"))
+    overrides = config.get("providers", {}).get(provider.name, {})
+    return provider, model_id, overrides.get("api_key")
 
 
 class _MarkdownStream:
@@ -79,17 +79,16 @@ def chat(messages, tools=None, model: str | None = None) -> dict:
     session backed by a file); the request body is generated and sent with
     chunked transfer encoding, so the conversation is never materialized.
     """
-    import os
-
-    model = model or os.environ.get("XG_MODEL", "@preset/mimo")
-    connection = http.client.HTTPSConnection("openrouter.ai", timeout=300)
+    provider, model_id, api_key_override = _resolve_model_and_provider(model)
+    connection = http.client.HTTPSConnection(provider.host, timeout=300)
     try:
         connection.request(
-            "POST", "/api/v1/chat/completions",
-            body=_request_chunks(messages, model, tools),
+            "POST", provider.path,
+            body=_request_chunks(messages, model_id, tools),
             headers={
-                "Authorization": f"Bearer {_api_key()}",
+                "Authorization": f"Bearer {resolve_key(provider, api_key_override)}",
                 "Content-Type": "application/json",
+                **dict(provider.extra_headers),
             },
             encode_chunked=True,
         )
