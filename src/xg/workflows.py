@@ -70,7 +70,8 @@ class Session:
         """Attach the session to a workspace. Idempotent.
 
         Existing files resume, so named sessions keep their history across
-        agent() calls and runs.
+        agent() calls and runs. Named sessions also become the workspace's
+        ``last session`` pointer (see last_session).
         """
         if self.path is not None:
             return
@@ -78,6 +79,8 @@ class Session:
         directory.mkdir(parents=True, exist_ok=True)
         slug = re.sub(r"[^a-z0-9-]+", "-", self.name.lower()).strip("-") or "session"
         self.path = directory / f"{slug}.jsonl"
+        if not self.name.startswith("temp-"):
+            (directory / ".last").write_text(slug, encoding="utf-8")
         for message in self._buffer:
             self._write(message)
         self._buffer.clear()
@@ -510,6 +513,25 @@ def _builtin_default(cfg: AgentConfig) -> int:
         return 0
     cfg.agent(cfg.request)
     return 0
+
+
+def last_session(root: str | Path) -> str | None:
+    """Return the name of a workspace's most recently used session.
+
+    Uses the ``.xg/sessions/.last`` pointer written by Session.bind(); falls
+    back to the most recently modified session file (ephemeral sessions
+    excluded — they are deleted after their run anyway).
+    """
+    directory = Path(root).resolve() / ".xg" / "sessions"
+    pointer = directory / ".last"
+    if pointer.is_file():
+        name = pointer.read_text(encoding="utf-8").strip()
+        if name and (directory / f"{name}.jsonl").is_file():
+            return name
+    candidates = [p for p in directory.glob("*.jsonl") if not p.name.startswith("temp-")]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime).removesuffix(".jsonl")
 
 
 def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[AgentConfig], int]:

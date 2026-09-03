@@ -88,10 +88,17 @@ to the model — they never enter a request body.
 Because workflows are deterministic, resuming means **replaying**:
 
 ```
-xg --resume                    # resume the default session (session)
-xg --resume mysession          # resume a named session
-xg --resume mysession -w fix   # resume with a named workflow
+xg --resume                        # last session of the current path
+xg --resume mysession              # a named session in the current path
+xg --resume ~/other/project        # that path's last session
+xg --resume ~/other/project fix    # a named session in another path
+xg --resume mysession -w repair    # combine with a named workflow
 ```
+
+Every path keeps its own sessions: sessions live in `<path>/.xg/sessions/`,
+and each workspace records a `.last` pointer (updated whenever a named
+session is used). Resuming another path runs the workflow with that path as
+the runtime root — same history, same workspace.
 
 The workflow re-executes; each `prompt()` and `agent()` call consumes the
 next recorded event instead of asking you or paying for inference. When the

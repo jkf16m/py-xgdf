@@ -5,9 +5,12 @@ Commands:
     xg              run the default workflow (interactive)
     xg PROMPT       run the default workflow with a request
     xg -w NAME      run a named workflow; -w alone lists them
-    xg --resume [SESSION] [--workflow NAME | PROMPT]
+    xg --resume [PATH] [SESSION]
                     resume a recorded session: prompts and agent turns are
-                    replayed from the JSONL until current state, then live
+                    replayed from the JSONL until current state, then live.
+                    No argument resumes the last session of the current
+                    path; a directory argument resumes that path's last
+                    session; PATH SESSION picks a specific one
     xg init         scaffold .xg/ in the current project
     xg --pty        launch an interactive shell behind a pseudo-terminal
     xg cmd [PROMPT] propose a shell command and invoke it (or inject it into
@@ -61,19 +64,40 @@ def _interactive_cmd() -> int:
         return 130
 
 
+def _resume_config(resume_args: list[str], request: str):
+    """Build a resume cfg from optional PATH and SESSION arguments."""
+    from xg.workflows import AgentConfig, Session, WorkflowRuntime, last_session
+
+    path = Path(resume_args[0]) if resume_args else None
+    if path is not None and path.is_dir():
+        root = path.resolve()
+        name = resume_args[1] if len(resume_args) > 1 else last_session(root)
+        if name is None:
+            raise RuntimeError(f"no session to resume in {root}")
+    else:
+        root = Path(".").resolve()
+        name = resume_args[0] if resume_args else last_session(root)
+        if name is None:
+            raise RuntimeError("no session to resume in the current path")
+    runtime = WorkflowRuntime(root, request=request)
+    return AgentConfig(session=Session(name=name), resume=True, _runtime=runtime)
+
+
 def main() -> int:
     """Run the xgdf runtime: everything routes through a workflow."""
     argv = sys.argv[1:]
 
-    # `--resume [SESSION]` can combine with `-w NAME` or a request; pull it
-    # out first so the remaining argv keeps its old shape.
-    resume_session: str | None = None
+    # `--resume [PATH] [SESSION]` can combine with `-w NAME` or a request;
+    # pull it out first so the remaining argv keeps its old shape. No argument
+    # means the last session of the current path; a directory means that
+    # path's last session; PATH SESSION picks a specific one.
+    resume_args: list[str] | None = None
     if "--resume" in argv:
         index = argv.index("--resume")
         argv.pop(index)
-        resume_session = "session"
-        if index < len(argv) and not argv[index].startswith("-"):
-            resume_session = argv.pop(index)
+        resume_args = []
+        while index < len(argv) and not argv[index].startswith("-") and len(resume_args) < 2:
+            resume_args.append(argv.pop(index))
 
     if argv and argv[0].lower() == "init":
         if len(argv) != 1:
@@ -103,12 +127,10 @@ def main() -> int:
             print("usage: xg --workflow [NAME|list]", file=sys.stderr)
             return 2
         try:
-            from xg.workflows import AgentConfig, Session, WorkflowRuntime, run_workflow
+            from xg.workflows import AgentConfig, WorkflowRuntime, run_workflow
 
-            cfg = AgentConfig()
-            if resume_session:
-                cfg = AgentConfig(session=Session(name=resume_session), resume=True,
-                                  _runtime=WorkflowRuntime("."))
+            cfg = (_resume_config(resume_args, "") if resume_args is not None
+                   else AgentConfig())
             return run_workflow(argv[0], ".", cfg=cfg)
         except RuntimeError as exc:
             print(f"xg: {exc}", file=sys.stderr)
@@ -126,13 +148,12 @@ def main() -> int:
     # Everything else routes through the default workflow: bare `xg` asks
     # for a request interactively; `xg PROMPT...` runs with the request
     # pre-loaded. Same workflow, same session schema as `xg -w default`.
-    from xg.workflows import AgentConfig, Session, WorkflowRuntime, run_workflow
+    from xg.workflows import AgentConfig, WorkflowRuntime, run_workflow
 
     prompt = _input_text(argv)
-    runtime = WorkflowRuntime(".", request=prompt)
-    cfg = (AgentConfig(session=Session(name=resume_session), resume=True, _runtime=runtime)
-           if resume_session else AgentConfig(_runtime=runtime))
     try:
+        cfg = (_resume_config(resume_args, prompt) if resume_args is not None
+               else AgentConfig(_runtime=WorkflowRuntime(".", request=prompt)))
         return run_workflow("default", ".", cfg=cfg)
     except RuntimeError as exc:
         print(f"xg: {exc}", file=sys.stderr)
