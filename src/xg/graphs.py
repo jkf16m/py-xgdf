@@ -1,12 +1,12 @@
-"""Near-deterministic workflow programs.
+"""Near-deterministic graph programs.
 
 Public API:
     Session                 # a writable context window
-    AgentConfig(model=None, session=None)   # the ``cfg`` handed to workflows
-    load_workflow(name, cwd) -> callable
-    run_workflow(name, cwd, cfg=None) -> int
+    AgentConfig(model=None, session=None)   # the ``cfg`` handed to graphs
+    load_graph(name, cwd) -> callable
+    run_graph(name, cwd, cfg=None) -> int
 
-A workflow is a Python file at ``.xg/workflows/<name>.py`` exposing
+A graph is a Python file at ``.xg/graphs/<name>.py`` exposing
 ``run(cfg)`` as a generator that yields operations:
 
     def run(cfg):
@@ -51,44 +51,44 @@ if TYPE_CHECKING:
     from xg.profiles import AgentProfile
 
 
-# ---- @workflow decorator ----
+# ---- @graph decorator ----
 
-_WORKFLOW_REGISTRY: dict[str, Callable] = {}
+_GRAPH_REGISTRY: dict[str, Callable] = {}
 
 
-def workflow(fn=None, *, name: str | None = None):
-    """Decorator that registers a function as an exposed workflow.
+def graph(fn=None, *, name: str | None = None):
+    """Decorator that registers a function as an exposed graph.
 
     The function receives ``cfg: AgentConfig`` and should return a compiled
     langgraph graph.
 
-        @workflow
+        @graph
         def my_flow(cfg):
             graph = StateGraph(...)
             ...
             return graph.compile()
 
-    Discovered via ``xg -w my-flow``.
+    Discovered via ``xg -g my-flow``.
     """
     def decorator(func: Callable) -> Callable:
-        workflow_name = name or func.__name__.replace("_", "-")
-        _WORKFLOW_REGISTRY[workflow_name] = func
+        graph_name = name or func.__name__.replace("_", "-")
+        _GRAPH_REGISTRY[graph_name] = func
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             return func(*args, **kwargs)
-        wrapper.__xg_workflow__ = workflow_name
+        wrapper.__xg_graph__ = graph_name
         return wrapper
     if fn is not None:
         return decorator(fn)
     return decorator
 
 
-def list_exposed_workflows() -> dict[str, Callable]:
-    """Return all @workflow-decorated functions."""
-    return dict(_WORKFLOW_REGISTRY)
+def list_exposed_graphs() -> dict[str, Callable]:
+    """Return all @graph-decorated functions."""
+    return dict(_GRAPH_REGISTRY)
 
 
-# ---- workflow operations (yielded by generator workflows) ----
+# ---- graph operations (yielded by generator graphs) ----
 
 
 class WorkspaceRead:
@@ -116,7 +116,7 @@ class Agent:
 
 
 class Workflow:
-    """Run another workflow by name."""
+    """Run another graph by name."""
     __slots__ = ("name",)
 
     def __init__(self, name: str):
@@ -124,10 +124,10 @@ class Workflow:
 
 
 def _load_session_state(session: Session) -> dict:
-    """Load workflow state from the session JSONL."""
+    """Load graph state from the session JSONL."""
     state = {"completed_steps": {}, "captured": {}}
     for entry in session._raw():
-        if entry.get("type") == "workflow_step":
+        if entry.get("type") == "graph_step":
             step = entry["step"]
             state["completed_steps"][step] = True
             if "captured" in entry:
@@ -136,15 +136,15 @@ def _load_session_state(session: Session) -> dict:
 
 
 def _save_session_state(session: Session, step: int, captured: dict | None = None) -> None:
-    """Append a workflow step completion to the session JSONL."""
-    entry = {"type": "workflow_step", "step": step, "completed": True}
+    """Append a graph step completion to the session JSONL."""
+    entry = {"type": "graph_step", "step": step, "completed": True}
     if captured:
         entry["captured"] = captured
     session.append(entry)
 
 
-def run_workflow_generator(gen, session: Session, cfg: AgentConfig) -> None:
-    """Walk through a generator-based workflow, handling resume.
+def run_generator(gen, session: Session, cfg: AgentConfig) -> None:
+    """Walk through a generator-based graph, handling resume.
 
     The generator yields operations (WorkspaceRead, Prompt, Agent, Workflow).
     The runner executes each operation, captures state, and on resume skips
@@ -206,7 +206,7 @@ def run_workflow_generator(gen, session: Session, cfg: AgentConfig) -> None:
             _save_session_state(session, step)
 
         elif isinstance(op, Workflow):
-            run_workflow(op.name, cfg.root, cfg=cfg)
+            run_graph(op.name, cfg.root, cfg=cfg)
             _save_session_state(session, step)
 
         try:
@@ -452,19 +452,19 @@ class AgentConfig:
             _runtime=self._runtime,
         )
 
-    # ---- runtime primitives (delegated; cfg is the workflow's facade) ----
+    # ---- runtime primitives (delegated; cfg is the graph's facade) ----
 
     def _rt(self) -> "WorkflowRuntime":
         if self._runtime is None:
             raise RuntimeError(
-                "this config has no runtime attached: workflows receive one "
-                "from the xg runner or the parent workflow; construct via "
-                "run_workflow(name, cfg=...) instead of AgentConfig() directly"
+                "this config has no runtime attached: graphs receive one "
+                "from the xg runner or ; the parent graph; construct via "
+                "run_graph(name, cfg=...) instead of AgentConfig() directly"
             )
         return self._runtime
 
     def shell(self, command: str) -> int:
-        """Run one trusted shell step as the workflow author, not the agent."""
+        """Run one trusted shell step as the graph author, not the agent."""
         return self._rt().shell(command)
 
     def agent(self, prompt: str, config: "AgentConfig | None" = None) -> str:
@@ -491,13 +491,13 @@ class AgentConfig:
         """The injected xgdf reference (see xg.docs)."""
         return self._rt().documentation
 
-    def workflow(self, name: str) -> int:
-        """Run another workflow (built-in or project) reusing this cfg.
+    def graph(self, name: str) -> int:
+        """Run another graph (built-in or project) reusing this cfg.
 
         The child receives this config — same model, session, tools, and
-        runtime root — so workflows compose like function calls.
+        runtime root — so graphs compose like function calls.
         """
-        return run_workflow(name, self._rt().root, cfg=self)
+        return run_graph(name, self._rt().root, cfg=self)
 
 
 def default_model(cwd: str | Path = ".") -> str:
@@ -511,7 +511,7 @@ def default_model(cwd: str | Path = ".") -> str:
 
 
 class WorkflowRuntime:
-    """Primitives handed to a workflow program."""
+    """Primitives handed to a graph program."""
 
     def __init__(self, root: str | Path, request: str = ""):
         self.root = Path(root).resolve()
@@ -573,8 +573,8 @@ class WorkflowRuntime:
             session.add("system", self.documentation)
 
     def shell(self, command: str) -> int:
-        """Run one trusted shell step as the workflow author, not the agent."""
-        print(f"\n[workflow] $ {command}")
+        """Run one trusted shell step as the graph author, not the agent."""
+        print(f"\n[graph] $ {command}")
         return subprocess.run(command, shell=True, cwd=self.root).returncode
 
     def agent(self, prompt: str, config: AgentConfig | None = None) -> str:
@@ -608,15 +608,15 @@ class WorkflowRuntime:
         if config.resume and not ephemeral:
             replayed = self._take_event(session, "step", step_hash)
             if replayed is not None:
-                print(f"\n[workflow] agent step replayed from session ({session.name})")
+                print(f"\n[graph] agent step replayed from session ({session.name})")
                 return replayed
         prompt_appended = (
             not ephemeral
             and session.last() == {"role": "user", "content": prompt}
         )
-        print(f"\n[workflow] agent step (model={model}, session={session.name}{', ephemeral' if ephemeral else ''})")
+        print(f"\n[graph] agent step (model={model}, session={session.name}{', ephemeral' if ephemeral else ''})")
         # Late import avoids the loader cycle: agent.run imports tools, and
-        # workflows import neither at module load time.
+        # graphs import neither at module load time.
         from xg.agent import ToolRejected, run as agent_run
 
         try:
@@ -629,7 +629,7 @@ class WorkflowRuntime:
             self._complete_step(session, step_hash)
             return result
         except ToolRejected as exc:
-            print(f"\n[workflow] tool call rejected: {exc}")
+            print(f"\n[graph] tool call rejected: {exc}")
             return f"tool call rejected: {exc}"
         finally:
             if ephemeral and session.path is not None and session.path.exists():
@@ -665,8 +665,9 @@ class WorkflowRuntime:
         return True
 
 
-def _builtin_cmd(cfg: AgentConfig) -> int:
-    """The built-in shell-command workflow (selected with ``-w xg-cmd``).
+@graph(name="xg-cmd")
+def _builtin_cmd(cfg: AgentConfig):
+    """The built-in shell-command graph (selected with ``-g xg-cmd``).
 
     Deliberately no workspace read: it needs one command, not file context.
     """
@@ -688,59 +689,19 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 
 
-def _builtin_default() -> "CompiledStateGraph":
-    """The default workflow: the constrained file-editing flow.
+@graph(name="xg-default")
+def _builtin_default(cfg: AgentConfig):
+    """The default graph: the constrained file-editing flow.
 
-    Returns a compiled graph. The runner handles session, checkpoint,
-    and resume logic.
+    Composed from the reusable graphs in agent_graph: workspace read,
+    user prompt, agent loop with the file-editing tools.
     """
-    from typing import TypedDict
-    from langgraph.graph import StateGraph, START, END
+    from xg.agent_graph import build_default_graph
 
-    class WorkflowState(TypedDict):
-        request: str
-        response: str
-
-    def read_workspace(state: WorkflowState, config):
-        from xg.utils import read_workspace
-        cfg: AgentConfig = config["configurable"]["cfg"]
-        session = cfg.get_session()
-        read_workspace(session, cfg.root)
-        return state
-
-    def prompt_user(state: WorkflowState, config):
-        cfg: AgentConfig = config["configurable"]["cfg"]
-        session = cfg.get_session()
-        if not cfg.request:
-            if not cfg.prompt("your request", session=session):
-                return {"request": ""}
-        else:
-            if session.path is not None:
-                session.add("user", cfg.request)
-                session.append({"xgdf-prompt": cfg.request})
-        return {"request": cfg.request}
-
-    def run_agent(state: WorkflowState, config):
-        cfg: AgentConfig = config["configurable"]["cfg"]
-        if not state.get("request"):
-            return {"response": ""}
-        result = cfg.agent(state["request"], config=cfg.branch(
-            tools=["select", "edit", "new", "delete"]
-        ))
-        return {"response": result}
-
-    graph = StateGraph(WorkflowState)
-    graph.add_node("read_workspace", read_workspace)
-    graph.add_node("prompt_user", prompt_user)
-    graph.add_node("run_agent", run_agent)
-    graph.add_edge(START, "read_workspace")
-    graph.add_edge("read_workspace", "prompt_user")
-    graph.add_edge("prompt_user", "run_agent")
-    graph.add_edge("run_agent", END)
-    return graph.compile()
+    return build_default_graph(tools=["select", "edit", "new", "delete"])
 
 
-def run_graph(graph, cfg: AgentConfig) -> int:
+def _invoke_graph(graph, cfg: AgentConfig) -> int:
     """Run a compiled graph with session and checkpoint handling.
 
     This is the runner that handles all infrastructure:
@@ -755,6 +716,7 @@ def run_graph(graph, cfg: AgentConfig) -> int:
     session = cfg.get_session()
     if not session.path:
         session.name = f"run-{uuid.uuid4().hex[:8]}"
+    session.bind(cfg.root)  # disk-backed from here on; writes .last pointer
 
     thread_id = session.name
     checkpointer_path = cfg.root / ".xg" / "checkpoints.db"
@@ -768,9 +730,9 @@ def run_graph(graph, cfg: AgentConfig) -> int:
         if cfg.resume:
             existing = compiled.get_state(config)
             if existing.values:
-                print(f"[resume] resuming from checkpoint: {existing.values}")
+                print(f"[resume] resuming from checkpoint: {list(existing.values)}")
 
-        compiled.invoke({"request": "", "response": ""}, config=config)
+        compiled.invoke({"cfg": cfg}, config=config)
     return 0
 
 
@@ -793,31 +755,31 @@ def last_session(root: str | Path) -> str | None:
     return max(candidates, key=lambda p: p.stat().st_mtime).removesuffix(".jsonl")
 
 
-def _project_workflow(name: str, cwd: str | Path) -> Callable[[AgentConfig], int] | None:
-    """Load a project workflow, searching from least to most specific."""
+def _project_graph(name: str, cwd: str | Path) -> Callable[[AgentConfig], int] | None:
+    """Load a project graph, searching from least to most specific."""
     selected: Path | None = None
     for directory in xg_directories(cwd):
-        path = directory / "workflows" / f"{name}.py"
+        path = directory / "graphs" / f"{name}.py"
         if path.is_file():
             selected = path
     if selected is None:
         return None
-    module_name = f"xg_workflow_{name}_{abs(hash(str(selected)))}"
+    module_name = f"xg_graph_{name}_{abs(hash(str(selected)))}"
     spec = importlib.util.spec_from_file_location(module_name, selected)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load workflow: {selected}")
+        raise RuntimeError(f"cannot load graph: {selected}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     run = getattr(module, "run", None)
     if not callable(run):
-        raise RuntimeError(f"workflow must define run(cfg): {selected}")
+        raise RuntimeError(f"graph must define run(cfg): {selected}")
     return run
 
 
-def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[AgentConfig], int]:
-    """Load a workflow, resolving built-in aliases as one logical name.
+def load_graph(name: str, cwd: str | Path = ".") -> Callable[[AgentConfig], int]:
+    """Load a graph, resolving built-in aliases as one logical name.
 
-    ``default`` and ``xg-default`` are aliases for the same workflow. A
+    ``default`` and ``xg-default`` are aliases for the same graph. A
     project-local ``default.py`` intentionally shadows that built-in for both
     names. The same rule applies to the ``cmd``/``xg-cmd`` aliases.
     """
@@ -829,27 +791,27 @@ def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[AgentConfig], i
     }
     if name in aliases:
         local_name, builtin = aliases[name]
-        local = _project_workflow(local_name, cwd)
+        local = _project_graph(local_name, cwd)
         return local or builtin
-    # Check exposed @workflow registry
-    exposed = list_exposed_workflows()
+    # Check exposed @graph registry
+    exposed = list_exposed_graphs()
     if name in exposed:
         return exposed[name]
-    # Check project workflows
-    workflow = _project_workflow(name, cwd)
-    if workflow is None:
-        raise RuntimeError(f"workflow not found: {name}")
-    return workflow
+    # Check project graphs
+    program = _project_graph(name, cwd)
+    if program is None:
+        raise RuntimeError(f"graph not found: {name}")
+    return program
 
 
-def run_workflow(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = None) -> int:
-    """Execute one workflow program.
+def run_graph(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = None) -> int:
+    """Execute one graph program.
 
-    With ``cfg`` (a parent workflow reusing another), the child runs on the
+    With ``cfg`` (a parent graph reusing another), the child runs on the
     parent's config and runtime; otherwise a fresh one is built for ``cwd``
     — that fresh path is what ``xg -w <name>`` uses.
     """
-    program = load_workflow(name, cwd)
+    program = load_graph(name, cwd)
     if cfg is None:
         cfg = AgentConfig(_runtime=WorkflowRuntime(cwd))
     elif cfg._runtime is None:
@@ -857,21 +819,21 @@ def run_workflow(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = Non
 
         cfg = dataclasses.replace(cfg, _runtime=WorkflowRuntime(cwd))
     result = program(cfg)
-    # Graph-based workflow: run with checkpoint handling
+    # Compiled graph: run with checkpoint handling
     if hasattr(result, "invoke") and hasattr(result, "get_state"):
-        return run_graph(result, cfg)
-    # Legacy workflow: return int
+        return _invoke_graph(result, cfg)
+    # Legacy run(cfg) program: return int
     return int(result or 0)
 
 
-def list_workflows(cwd: str | Path = ".") -> list[str]:
-    """Return available workflow names, built-ins first."""
-    # Packaged workflows are listed by their canonical xg-* names. Their
-    # short names are invocation aliases, not additional workflows.
+def list_graphs(cwd: str | Path = ".") -> list[str]:
+    """Return available graph names, built-ins first."""
+    # Packaged graphs are listed by their canonical xg-* names. Their
+    # short names are invocation aliases, not additional graphs.
     names = ["xg-default", "xg-cmd"]
     seen = set()
     for directory in xg_directories(cwd):
-        for path in sorted((directory / "workflows").glob("*.py")):
+        for path in sorted((directory / "graphs").glob("*.py")):
             if path.stem not in seen:
                 seen.add(path.stem)
                 names.append(path.stem)

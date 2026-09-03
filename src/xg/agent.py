@@ -25,7 +25,7 @@ class ToolRejected(Exception):
 def run(root: str, prompt: str, chat: Callable, profile: AgentProfile | None = None, history: list[dict] | None = None, tools: list[str | ToolSpec] | None = None, session=None, prompt_appended: bool = False) -> str:
     """Run one prompt using a reusable, code-defined agent profile.
 
-    ``session`` (a xg.workflows.Session) makes the conversation log itself
+    ``session`` (a xg.graphs.Session) makes the conversation log itself
     the context window: every message is appended to its JSONL file and each
     model request is assembled by walking that file — the history is never
     loaded into RAM. ``prompt_appended`` marks that prompt() already wrote
