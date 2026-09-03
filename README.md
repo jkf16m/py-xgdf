@@ -1,19 +1,49 @@
 # xg — Generative Development Framework
 
-A deterministic coding agent with an interactive PTY shell and a Python
-tool SDK.
+A deterministic coding agent driven by Python workflows: every edit is a
+small, human-approved tool call, every run is a scripted `run(cfg)` function,
+and every session is a resumable event log. Constrained file tools, a Python
+tool SDK, no hidden shell access.
 
-## Installation (inside your development environment)
+- **PyPI:** `py-xgdf`
+- **Import:** `xg`
+- **CLI:** `xg`
+- **Requires:** Python 3.11+, Linux or macOS (uses `pty`/`termios`)
+- **License:** MIT
 
-`xg` is deliberately scoped to the Python environment where it is
-installed — it is not available globally.
+## Installation
+
+`xg` is deliberately scoped to the Python environment where it is installed —
+it is not available globally.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .          # development install of this repo
-# or, once published:     pip install py-xgdf
+# or:                     pip install py-xgdf   (once published to PyPI)
 ```
+
+## Quick start
+
+```bash
+xg init               # scaffold .xg/ (config, workflows, session store)
+xg                    # interactive: type your request, agent edits files
+```
+
+## Security model
+
+* The default workflow reads your **entire workspace** (text files, oldest
+  first, gitignored paths excluded) and sends it to the configured model
+  provider. Do not run xg on workspaces you would not share with that
+  provider.
+* The agent can only edit files via a constrained tool state machine —
+  every edit is shown as a git patch and needs your explicit approval.
+  `new`/`delete` and the `cmd` workflow are also human-confirmed.
+* There is no shell tool for the agent in the default workflow; `cfg.shell()`
+  is a trusted workflow-author step only. The `xg-cmd` workflow runs shell
+  commands with your confirmation.
+* API keys never enter the workspace context; they resolve from config,
+  environment variables, or a command such as `pass show`.
 
 ## Usage
 
@@ -30,7 +60,8 @@ xg --help              # full CLI reference
 ```
 
 Workflows are selected with `-w`; `xg -w` or `xg --workflow` lists all
-available workflows. There are no `workflow`, `cmd`, `run`, or `pty` CLI commands. Packaged workflows use canonical `xg-*` names: `xg-default`
+available workflows. There are no `workflow`, `cmd`, `run`, or `pty` CLI
+commands. Packaged workflows use canonical `xg-*` names: `xg-default`
 (alias `default`) and `xg-cmd` (alias `cmd`). Both are ordinary workflow
 implementations: `xg-cmd` uses `cfg.agent()` with its restricted `cmd` tool,
 so prompts, model replies, tool calls, command results, and resume behavior
@@ -45,6 +76,24 @@ The agent's behavior lives in `.xg/workflows/<name>.py`, exposing
 `run(cfg)`. `cfg` is an `AgentConfig` handed to it either by the xg runner
 (`xg -w <name>`) or by a parent workflow — it carries the inference settings
 (model, session, tools) **and** the runtime primitives:
+
+```python
+def run(cfg):
+    session = cfg.get_session()             # writable context window
+    if cfg.prompt("describe the change"):
+        cfg.agent(cfg.request)              # one inference turn
+        cfg.workflow("changelog")           # reuse another workflow
+    return 0
+```
+
+The workflow runtime reads `.xg/` from the current directory, `~/.xg/`, and
+all ancestors of `.xg/` (least specific first); `.xg/` in the working
+directory wins. Inside `.xg/`:
+
+* `workflows/<name>.py` — Python workflows exposing `run(cfg)`
+* `sessions/` — JSONL session logs and the `.last` pointer
+* `config.json` — configuration (see Configuration below)
+* `.venv/` — the private environment created by `xg init`
 
 ```python
 def run(cfg):
@@ -149,17 +198,23 @@ built-in ANSI coloring.
 Models are `provider/model-id`. Built-in providers (all used via their
 OpenAI-compatible chat-completions endpoints): `openrouter`, `openai`,
 `anthropic`, `xai`, `gemini`. A model without a known prefix goes to
-`default_provider` (default: `openrouter`).
+`default_provider` (default: `openrouter`). Example:
+
+```bash
+export ANTHROPIC_API_KEY=...      # or configure via config.json
+xg "explain the structure of this repo"
+```
 
 API keys resolve in order:
 
 1. `providers.<name>.api_key` from config:
    - `$(command …)` — run via bash, first stdout line is the key
-     (e.g. `"$(pass show openai/xg)"`)
+     (e.g. `"$(pass show anthropic/xg)"`)
    - `env:NAME` — read environment variable `NAME`
    - any other value — literal key
 2. the provider's environment variable (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …)
-3. the provider's built-in default (openrouter: `pass show pi/openrouter`)
+3. the provider's built-in default (openrouter only: `pass show pi/openrouter`;
+   this is a developer convenience and can be overridden by config).
 
 ## Layout
 
@@ -167,6 +222,22 @@ API keys resolve in order:
 src/xg/        import name: xg (CLI in cli.py, SDK in sdk.py)
 examples/        example workspaces
 ```
+
+`src/xg/` modules: `cli.py` (entry point), `workflows.py` (Session,
+AgentConfig, runtime), `agent.py` (agent loop), `tools.py` (tool state
+machine), `sdk.py` (tool/profile SDK), `providers.py` + `llm.py` (model
+providers and streaming chat), `config.py` (layered config), `init.py`
+(`xg init`).
+
+## Contributing
+
+Issues and pull requests are welcome. Please keep changes consistent with
+the deterministic-workflow philosophy: no hidden side effects, tool calls
+remain human-approved.
+
+## License
+
+MIT — see `LICENSE` in the repository root.
 
 ## Names
 
