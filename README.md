@@ -28,17 +28,29 @@ xg -w            # list workflows; xg -w NAME runs one
 ## Workflows
 
 The agent's behavior lives in `.xg/workflows/<name>.py`, exposing
-`run(gdev)` — ordinary Python that decides where inference happens:
+`run(cfg)`. `cfg` is an `AgentConfig` handed to it either by the xg runner
+(`xg -w <name>`) or by a parent workflow — it carries the inference settings
+(model, session, tools) **and** the runtime primitives:
 
 ```python
-import xg.workflows as wf
-
-def run(gdev):
-    cfg = wf.AgentConfig()
-    session = cfg.get_session()               # disk-backed context window
-    if gdev.prompt("describe the change", session=session):
-        gdev.agent(gdev.request, config=cfg)  # one inference turn
+def run(cfg):
+    session = cfg.get_session()             # writable context window
+    if cfg.prompt("describe the change"):
+        cfg.agent(cfg.request)              # one inference turn
+        cfg.workflow("changelog")           # reuse another workflow
     return 0
+```
+
+A child workflow receives the parent's cfg — same model, session, and
+tools — so workflows compose like function calls. Built-in workflows
+(`default`, …) are usable the same way, and from the SDK:
+
+```python
+from xg import run_workflow, AgentConfig
+
+run_workflow("default")                     # fresh runtime
+cfg = AgentConfig(model="anthropic/claude-sonnet-4-5")
+run_workflow("my-flow", cfg=cfg)            # your settings
 ```
 
 ## Configuration

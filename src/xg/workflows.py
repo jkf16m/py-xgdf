@@ -2,34 +2,34 @@
 
 Public API:
     Session                 # a writable context window
-    AgentConfig(model=None, session=None)
-    WorkflowRuntime        # passed to workflows as ``xg``
+    AgentConfig(model=None, session=None)   # the ``cfg`` handed to workflows
     load_workflow(name, cwd) -> callable
-    run_workflow(name, cwd) -> int
+    run_workflow(name, cwd, cfg=None) -> int
 
 A workflow is a Python file at ``.xg/workflows/<name>.py`` exposing
-``run(xg)``. Inside a workflow the author decides deterministically when to
-execute shell steps, when to request model inference, and when to yield
-control to the user:
+``run(cfg)``. ``cfg`` is an :class:`AgentConfig`: it carries the inference
+settings (model, session, tools) AND the runtime primitives. The xg runner
+creates it for ``xg -w <name>``; a parent workflow passes its own cfg to a
+child workflow, so the child inherits the model, session, and tools:
 
-    def run(xg):
-        xg.shell("ruff format .")
-        xg.agent("fix all lint issues", config=AgentConfig(model="org/big"))
+    def run(cfg):
+        cfg.shell("ruff format .")
+        cfg.agent("fix all lint issues", config=AgentConfig(model="org/big"))
 
-        cfg = AgentConfig()                 # owns a session (context window)
-        session = cfg.get_session()         # writable reference
+        session = cfg.get_session()             # writable context window
         session.add("system", "answer in the user's language")
-        if xg.prompt("describe the change", session=session):
-            xg.agent(xg.request, config=cfg)
+        if cfg.prompt("describe the change"):
+            cfg.agent(cfg.request)
+
+        cfg.workflow("changelog")               # reuse another workflow
 
 Rules:
-  * ``xg.shell()`` is a trusted author step, never available to the model;
+  * ``cfg.shell()`` is a trusted author step, never available to the model;
     the agent stays limited to the constrained file tools.
   * ``AgentConfig.model`` defaults to the configured xg model.
   * ``AgentConfig()`` without an explicit session lazily creates one; keep
-    the config around and every ``agent(config=cfg)`` call shares that
-    context window. Without a session, each call runs on a temporary
-    context (the model works from its own memory alone).
+    the config around and every ``cfg.agent()`` call shares that context
+    window. Without a session, each call runs on a temporary context.
 """
 
 from __future__ import annotations
@@ -136,13 +136,14 @@ class AgentConfig:
     internally (no description, no parameters); the internal state machine
     still applies. Passing
     the same config (or session) to several agent() calls makes them share
-    one context window; use ``branch()`` or ``AgentConfig(**{**vars(cfg),
-    "tools": [...]})`` (object destructuring) for per-step variations.
+    one context window; use ``branch()`` for per-step variations — dataclass
+    slots mean ``**vars(cfg)`` destructuring is not available.
     """
 
     model: str | None = None
     session: Session | None = None
     tools: list[str | ToolSpec] | None = None
+    _runtime: "WorkflowRuntime | None" = None  # attached by the runner
 
     _KNOWN_TOOLS = frozenset({"select", "edit", "close", "new", "delete"})
 
@@ -180,7 +181,53 @@ class AgentConfig:
             model=model if model is not None else self.model,
             session=session if session is not None else self.session,
             tools=tools if tools is not None else self.tools,
+            _runtime=self._runtime,
         )
+
+    # ---- runtime primitives (delegated; cfg is the workflow's facade) ----
+
+    def _rt(self) -> "WorkflowRuntime":
+        if self._runtime is None:
+            raise RuntimeError(
+                "this config has no runtime attached: workflows receive one "
+                "from the xg runner or the parent workflow; construct via "
+                "run_workflow(name, cfg=...) instead of AgentConfig() directly"
+            )
+        return self._runtime
+
+    def shell(self, command: str) -> int:
+        """Run one trusted shell step as the workflow author, not the agent."""
+        return self._rt().shell(command)
+
+    def agent(self, prompt: str, config: "AgentConfig | None" = None) -> str:
+        """Run one constrained agent turn (see WorkflowRuntime.agent)."""
+        return self._rt().agent(prompt, config=config or self)
+
+    def prompt(self, invitation: str = "describe what you want", session: Session | None = None) -> bool:
+        """Yield control to the user; False on empty input/EOF."""
+        return self._rt().prompt(invitation, session=session if session is not None else self.session)
+
+    def workspace(self) -> str:
+        """Render the deterministic whole-workspace context."""
+        return self._rt().workspace()
+
+    @property
+    def request(self) -> str:
+        """The text the user entered at the last prompt()."""
+        return self._rt().request
+
+    @property
+    def root(self) -> "Path":
+        """The workspace root this runtime executes in."""
+        return self._rt().root
+
+    def workflow(self, name: str) -> int:
+        """Run another workflow (built-in or project) reusing this cfg.
+
+        The child receives this config — same model, session, tools, and
+        runtime root — so workflows compose like function calls.
+        """
+        return run_workflow(name, self._rt().root, cfg=self)
 
 
 def default_model(cwd: str | Path = ".") -> str:
@@ -266,17 +313,17 @@ class WorkflowRuntime:
         return workspace_context(self.root)
 
 
-def _builtin_default(xg: WorkflowRuntime) -> int:
+def _builtin_default(cfg: AgentConfig) -> int:
     """The default workflow: the constrained file-editing flow."""
-    xg.workspace()  # forced deterministic read
+    cfg.workspace()  # forced deterministic read
     print("tools: select -> edit|close | new(name, content) | delete\n")
-    if not xg.prompt("your request"):
+    if not cfg.prompt("your request"):
         return 0
-    xg.agent(xg.request)
+    cfg.agent(cfg.request)
     return 0
 
 
-def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[WorkflowRuntime], int]:
+def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[AgentConfig], int]:
     """Load a workflow program by name; ``default`` is built in."""
     if name == "default":
         return _builtin_default
@@ -295,15 +342,25 @@ def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[WorkflowRuntime
     spec.loader.exec_module(module)
     run = getattr(module, "run", None)
     if not callable(run):
-        raise RuntimeError(f"workflow must define run(xg): {selected}")
+        raise RuntimeError(f"workflow must define run(cfg): {selected}")
     return run
 
 
-def run_workflow(name: str, cwd: str | Path = ".") -> int:
-    """Execute one workflow in a fresh runtime."""
+def run_workflow(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = None) -> int:
+    """Execute one workflow program.
+
+    With ``cfg`` (a parent workflow reusing another), the child runs on the
+    parent's config and runtime; otherwise a fresh one is built for ``cwd``
+    — that fresh path is what ``xg -w <name>`` uses.
+    """
     program = load_workflow(name, cwd)
-    runtime = WorkflowRuntime(cwd)
-    return int(program(runtime) or 0)
+    if cfg is None:
+        cfg = AgentConfig(_runtime=WorkflowRuntime(cwd))
+    elif cfg._runtime is None:
+        import dataclasses
+
+        cfg = dataclasses.replace(cfg, _runtime=WorkflowRuntime(cwd))
+    return int(program(cfg) or 0)
 
 
 def list_workflows(cwd: str | Path = ".") -> list[str]:
