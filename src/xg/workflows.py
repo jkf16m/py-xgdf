@@ -641,59 +641,78 @@ def _builtin_cmd(cfg: AgentConfig) -> int:
     return 0
 
 
+from typing import TypedDict
+from langgraph.graph import StateGraph, START, END
+from langchain_core.runnables import RunnableConfig
+
+
+class DefaultWorkflowState(TypedDict):
+    request: str
+    response: str
+
+
+def _read_workspace(state: DefaultWorkflowState, config: RunnableConfig):
+    from xg.utils import read_workspace
+    cfg: AgentConfig = config["configurable"]["cfg"]
+    session = cfg.get_session()
+    read_workspace(session, cfg.root)
+    return state
+
+
+def _prompt_user(state: DefaultWorkflowState, config: RunnableConfig):
+    cfg: AgentConfig = config["configurable"]["cfg"]
+    session = cfg.get_session()
+    if not cfg.request:
+        if not cfg.prompt("your request", session=session):
+            return {"request": ""}
+    else:
+        if session.path is not None:
+            session.add("user", cfg.request)
+            session.append({"xgdf-prompt": cfg.request})
+    return {"request": cfg.request}
+
+
+def _run_agent(state: DefaultWorkflowState, config: RunnableConfig):
+    cfg: AgentConfig = config["configurable"]["cfg"]
+    if not state.get("request"):
+        return {"response": ""}
+    result = cfg.agent(state["request"], config=cfg.branch(
+        tools=["select", "edit", "new", "delete"]
+    ))
+    return {"response": result}
+
+
+def _build_default_graph() -> StateGraph:
+    """Build the default workflow graph."""
+    graph = StateGraph(DefaultWorkflowState)
+    graph.add_node("read_workspace", _read_workspace)
+    graph.add_node("prompt_user", _prompt_user)
+    graph.add_node("run_agent", _run_agent)
+    graph.add_edge(START, "read_workspace")
+    graph.add_edge("read_workspace", "prompt_user")
+    graph.add_edge("prompt_user", "run_agent")
+    graph.add_edge("run_agent", END)
+    return graph
+
+
+# Compiled graph, ready for composition
+DEFAULT_WORKFLOW = _build_default_graph().compile()
+
+
 def _builtin_default(cfg: AgentConfig) -> int:
     """The default workflow: the constrained file-editing flow.
 
-    Uses a langgraph StateGraph for explicit, resumable workflow execution.
-    Every invocation creates a fresh session. Resume is explicit via --resume.
+    Sets up the session and invokes the compiled graph.
+    The graph can be composed with other graphs or used standalone.
     """
     import uuid
-    from typing import TypedDict
-    from langgraph.graph import StateGraph, START, END
 
     session = cfg.get_session()
     if not session.path:
         session.name = f"run-{uuid.uuid4().hex[:8]}"
 
-    class WorkflowState(TypedDict):
-        request: str
-        response: str
-
-    def read_workspace_node(state: WorkflowState):
-        from xg.utils import read_workspace
-        read_workspace(session, cfg.root)
-        return state
-
-    def prompt_user_node(state: WorkflowState):
-        if not cfg.request:
-            if not cfg.prompt("your request", session=session):
-                return {"request": ""}
-        else:
-            if session.path is not None:
-                session.add("user", cfg.request)
-                session.append({"xgdf-prompt": cfg.request})
-        return {"request": cfg.request}
-
-    def run_agent_node(state: WorkflowState):
-        if not state.get("request"):
-            return {"response": ""}
-        result = cfg.agent(state["request"], config=cfg.branch(
-            tools=["select", "edit", "new", "delete"]
-        ))
-        return {"response": result}
-
-    graph = StateGraph(WorkflowState)
-    graph.add_node("read_workspace", read_workspace_node)
-    graph.add_node("prompt_user", prompt_user_node)
-    graph.add_node("run_agent", run_agent_node)
-
-    graph.add_edge(START, "read_workspace")
-    graph.add_edge("read_workspace", "prompt_user")
-    graph.add_edge("prompt_user", "run_agent")
-    graph.add_edge("run_agent", END)
-
-    app = graph.compile()
-    app.invoke({"request": "", "response": ""})
+    config: RunnableConfig = {"configurable": {"cfg": cfg}}
+    DEFAULT_WORKFLOW.invoke({"request": "", "response": ""}, config=config)
     return 0
 
 
