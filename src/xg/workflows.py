@@ -13,11 +13,13 @@ creates it for ``xg -w <name>``; a parent workflow passes its own cfg to a
 child workflow, so the child inherits the model, session, and tools:
 
     def run(cfg):
+        from xg.utils import read_workspace
+
         cfg.shell("ruff format .")
         cfg.agent("fix all lint issues", config=AgentConfig(model="org/big"))
 
         session = cfg.get_session()             # writable context window
-        session.add("system", "answer in the user's language")
+        read_workspace(session, cfg.root)       # deterministic reads, once
         if cfg.prompt("describe the change"):
             cfg.agent(cfg.request)
 
@@ -48,7 +50,6 @@ from xg.config import xg_directories, load
 from xg.docs import documentation_for
 from xg.llm import chat
 from xg.tools import ToolSpec
-from xg.workspace import context as workspace_context
 
 if TYPE_CHECKING:
     from xg.profiles import AgentProfile
@@ -310,14 +311,6 @@ class AgentConfig:
         return self._rt().prompt(invitation, session=session if session is not None else self.session,
                                  resume=self.resume)
 
-    def workspace(self) -> str:
-        """One-time deterministic workspace read, injected into the session.
-
-        The context lands in the session window once, marker-deduped, so
-        resumed sessions keep the recorded read instead of re-reading.
-        """
-        return self._rt().workspace(session=self.get_session())
-
     @property
     def request(self) -> str:
         """The text the user entered at the last prompt()."""
@@ -506,22 +499,6 @@ class WorkflowRuntime:
             session.append({"xgdf-prompt": text})  # resume event
         return True
 
-    def workspace(self, session: "Session | None" = None) -> str:
-        """Deterministic whole-workspace read (m-time ordered), once.
-
-        The file reads are a hardcoded deterministic step of the workflow:
-        the rendered context is appended to the session window once (marker
-        deduped), never re-injected per turn or per prompt. The default
-        workflow runs this at its start; other workflows run it only if
-        they call it.
-        """
-        context = workspace_context(self.root)
-        if session is not None:
-            marker = "# xgdf workspace read"
-            if not any(marker in m.get("content", "") for m in session):
-                session.add("system", f"{marker}\n{context}")
-        return context
-
 
 def _builtin_cmd(cfg: AgentConfig) -> int:
     """The built-in shell-command workflow (selected with ``-w xg-cmd``).
@@ -549,7 +526,8 @@ def _builtin_default(cfg: AgentConfig) -> int:
     one JSONL window in the workspace.
     """
     session = cfg.get_session()
-    cfg.workspace()  # deterministic reads, once, into the session
+    from xg.utils import read_workspace
+    read_workspace(session, cfg.root)  # deterministic reads, once, explicit
     print("tools: select -> edit|close | new(name, content) | delete\n")
     if not cfg.request and not cfg.prompt("your request", session=session):
         return 0

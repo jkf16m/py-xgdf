@@ -100,7 +100,8 @@ def _run_logged(root, prompt, chat, profile, state, tool_specs, session, prompt_
         session.add("system", profile.system_prompt)
     # The workspace context is NOT injected here: deterministic file reads
     # are a one-time step of the workflow that needs them (xg-default calls
-    # cfg.workspace() at its start), never a per-turn injection.
+    # xg.utils.read_workspace(session, root) at its start), never a per-turn
+    # injection.
     if not prompt_appended:
         session.add("user", prompt)
     while True:
