@@ -5,3 +5,5 @@ dist/
 build/
 
 .xg/.venv/
+.xg/sessions/
+.xg/checkpoints.db
