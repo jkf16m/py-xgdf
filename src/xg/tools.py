@@ -8,18 +8,21 @@ Public API:
     ToolState.close() -> str
     ToolState.new(name, content) -> str
     ToolState.delete(path) -> str
+    ToolState.cmd(command) -> str
 
 The default flow is deliberately constrained. There is no shell access.
 Allowed transitions:
     select(path) -> edit(old_text, new_text) | close()
     new(name, content)            (single operation)
     delete(path)                  (single operation, asks for confirmation)
+    cmd(command)                  (command workflow, asks for confirmation)
 """
 
 from __future__ import annotations
 
 import difflib
 import json
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +33,7 @@ from xg.workspace import resolve
 
 BASE_TOOLS = {"select", "new", "delete"}
 SELECTED_TOOLS = {"edit", "close"}
+COMMAND_TOOLS = {"cmd"}
 
 
 @dataclass(slots=True)
@@ -72,14 +76,15 @@ class ToolState:
 
     def restrict(self, tools: list[str]) -> None:
         """Narrow valid tools to these names (workflow-provided subset)."""
-        unknown = set(tools) - (BASE_TOOLS | SELECTED_TOOLS)
+        unknown = set(tools) - (BASE_TOOLS | SELECTED_TOOLS | COMMAND_TOOLS)
         if unknown:
             raise ValueError(f"unknown tools: {', '.join(sorted(unknown))}")
         self.tool_set = set(tools)
 
     def allowed_tools(self) -> set[str]:
         """Return only tools valid for the current workflow state."""
-        allowed = SELECTED_TOOLS if self.selected is not None else BASE_TOOLS
+        # Command workflow is deliberately independent of the editing state.
+        allowed = COMMAND_TOOLS if self.tool_set == COMMAND_TOOLS else (SELECTED_TOOLS if self.selected is not None else BASE_TOOLS)
         if self.tool_set is not None:
             allowed = allowed & self.tool_set
             if self.selected is not None:
@@ -141,6 +146,19 @@ class ToolState:
         path.write_text(content, encoding="utf-8")
         return f"created {path.relative_to(self.root).as_posix()}"
 
+    def cmd(self, command: str) -> str:
+        """Approve and execute one shell command for the command workflow."""
+        if not command or "\x00" in command:
+            raise ValueError("command must be non-empty and contain no NUL")
+        if not self.confirm(f"Run command?\n\033[2;32m$ {command}\033[0m\n[y/N] "):
+            return "command rejected by user"
+        result = subprocess.run(
+            ["/bin/sh", "-lc", command], cwd=self.root,
+            capture_output=True, text=True,
+        )
+        output = (result.stdout + result.stderr).strip()
+        return f"exit {result.returncode}\n{output}" if output else f"exit {result.returncode}"
+
     def delete(self, path: str) -> str:
         """Delete an existing file after explicit user confirmation."""
         target = resolve(self.root, path)
@@ -165,6 +183,7 @@ def schemas(allowed: set[str] | None = None, overrides: dict[str, ToolSpec] | No
         {"type": "function", "function": {"name": "close", "description": "Close the selected file and return to the previous step.", "parameters": {"type": "object", "properties": {}}}},
         {"type": "function", "function": {"name": "new", "description": "Create a new file with content in a single operation.", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "content": {"type": "string"}}, "required": ["name", "content"]}}},
         {"type": "function", "function": {"name": "delete", "description": "Delete an existing file; the user is asked for confirmation.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+        {"type": "function", "function": {"name": "cmd", "description": "Approve and execute one shell command in the workspace.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
     ]
     result = [schema for schema in all_schemas if schema["function"]["name"] in allowed]
     for schema in result:
@@ -179,7 +198,7 @@ def schemas(allowed: set[str] | None = None, overrides: dict[str, ToolSpec] | No
 
 def dispatch(state: ToolState, name: str, arguments: str) -> str:
     """Dispatch one JSON tool call to the stateful protocol."""
-    if name not in BASE_TOOLS | SELECTED_TOOLS:
+    if name not in BASE_TOOLS | SELECTED_TOOLS | COMMAND_TOOLS:
         raise ValueError(f"unknown tool: {name}")
     allowed = state.allowed_tools()
     if name not in allowed:

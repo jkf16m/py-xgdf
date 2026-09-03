@@ -31,7 +31,10 @@ xg --help              # full CLI reference
 
 Workflows are selected with `-w`; `xg -w` or `xg --workflow` lists all
 available workflows. There are no `workflow`, `cmd`, `run`, or `pty` CLI commands. Packaged workflows use canonical `xg-*` names: `xg-default`
-(alias `default`) and `xg-cmd` (alias `cmd`). Additional workflows can be
+(alias `default`) and `xg-cmd` (alias `cmd`). Both are ordinary workflow
+implementations: `xg-cmd` uses `cfg.agent()` with its restricted `cmd` tool,
+so prompts, model replies, tool calls, command results, and resume behavior
+use the same session machinery as `xg-default`. Additional workflows can be
 placed in `.xg/workflows/<name>.py`.
 
 Run `xg --help` for every option, including resume combinations.

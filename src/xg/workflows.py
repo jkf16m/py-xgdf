@@ -47,7 +47,6 @@ from typing import Any, Callable
 from xg.config import xg_directories, load
 from xg.docs import documentation_for
 from xg.llm import chat
-from xg.pty import propose
 from xg.tools import ToolSpec
 from xg.workspace import context as workspace_context
 
@@ -224,7 +223,7 @@ class AgentConfig:
     resume: bool = False  # replay completed agent steps instead of re-running
     _runtime: "WorkflowRuntime | None" = None  # attached by the runner
 
-    _KNOWN_TOOLS = frozenset({"select", "edit", "close", "new", "delete"})
+    _KNOWN_TOOLS = frozenset({"select", "edit", "close", "new", "delete", "cmd"})
 
     def __post_init__(self) -> None:
         """Normalize plain strings to bare ToolSpecs and fail fast on
@@ -503,9 +502,12 @@ class WorkflowRuntime:
 
 def _builtin_cmd(cfg: AgentConfig) -> int:
     """The built-in shell-command workflow (selected with ``-w xg-cmd``)."""
-    if not cfg.request and not cfg.prompt("your command request"):
+    session = cfg.get_session()
+    if not cfg.request and not cfg.prompt("your command request", session=session):
         return 0
-    return propose(cfg.request, chat)
+    command_cfg = cfg.branch(session=session, tools=["cmd"])
+    cfg.agent(cfg.request, config=command_cfg)
+    return 0
 
 
 def _builtin_default(cfg: AgentConfig) -> int:
