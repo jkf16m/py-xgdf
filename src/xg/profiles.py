@@ -49,7 +49,9 @@ def default_profile() -> AgentProfile:
             "close() unselects and returns to the previous step. Use new(name, "
             "content) to create a file in one operation. Use delete(path) to "
             "remove a file (the user confirms). There is no shell access. "
-            "Do not invent paths. Return a concise final report when finished."
+            "Do not invent paths. If no file operation is needed, simply "
+            "reply in text (one concise answer, no tool call). "
+            "Return a concise final report when finished."
         ),
         program=default_program,
     )

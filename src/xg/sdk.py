@@ -174,8 +174,13 @@ class Agent:
         """Create a fresh tool execution-point object."""
         return ToolRef(name)
 
-    def call(self, *tool_names: ToolRef) -> None:
-        """Expose these tool objects and fill the one the model uses."""
+    def call(self, *tool_names: ToolRef) -> str | None:
+        """Expose these tool objects and fill the one the model uses.
+
+        A plain-text reply with no tool call is allowed: it is returned as
+        a string (and was already streamed to the terminal) and no ToolRef
+        is filled. More than one tool call is an error.
+        """
         if not tool_names:
             raise ValueError("agent.call() requires at least one tool")
         from xg.tools import ToolState, dispatch, schemas
@@ -192,13 +197,15 @@ class Agent:
         ]
         message = self.chat(messages, schemas(allowed))
         calls = message.get("tool_calls") or []
-        if len(calls) != 1:
-            text = (message.get("content") or "").strip()
+        if len(calls) > 1:
             raise NoToolCall(
-                f"expected exactly one tool call, got {len(calls)}"
-                + (f"; model replied with text: {text[:200]}" if text else ""),
-                text=text,
+                f"expected exactly one tool call, got {len(calls)}",
             )
+        if not calls:
+            # A simple reply is a valid outcome: the text was already
+            # streamed to the terminal. No ToolRef is filled, so the
+            # imperative program naturally proceeds without tool effects.
+            return (message.get("content") or "").strip()
         call = calls[0]
         function = call.get("function") or {}
         name = function.get("name", "")
