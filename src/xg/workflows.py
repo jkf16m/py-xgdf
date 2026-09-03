@@ -59,10 +59,11 @@ _WORKFLOW_REGISTRY: dict[str, Callable] = {}
 def workflow(fn=None, *, name: str | None = None):
     """Decorator that registers a function as an exposed workflow.
 
-    The function should return a compiled langgraph graph.
+    The function receives ``cfg: AgentConfig`` and should return a compiled
+    langgraph graph.
 
         @workflow
-        def my_flow():
+        def my_flow(cfg):
             graph = StateGraph(...)
             ...
             return graph.compile()
@@ -855,7 +856,7 @@ def run_workflow(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = Non
         import dataclasses
 
         cfg = dataclasses.replace(cfg, _runtime=WorkflowRuntime(cwd))
-    result = program()
+    result = program(cfg)
     # Graph-based workflow: run with checkpoint handling
     if hasattr(result, "invoke") and hasattr(result, "get_state"):
         return run_graph(result, cfg)
