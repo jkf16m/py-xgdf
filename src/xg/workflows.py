@@ -42,13 +42,16 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from xg.config import xg_directories, load
 from xg.docs import documentation_for
 from xg.llm import chat
 from xg.tools import ToolSpec
 from xg.workspace import context as workspace_context
+
+if TYPE_CHECKING:
+    from xg.profiles import AgentProfile
 
 
 @dataclass(kw_only=True, slots=True)
@@ -220,6 +223,7 @@ class AgentConfig:
     model: str | None = None
     session: Session | None = None
     tools: list[str | ToolSpec] | None = None
+    profile: "AgentProfile | None" = None  # per-step profile override
     resume: bool = False  # replay completed agent steps instead of re-running
     _runtime: "WorkflowRuntime | None" = None  # attached by the runner
 
@@ -246,7 +250,8 @@ class AgentConfig:
         return self.session
 
     def branch(self, model: str | None = None, session: Session | None = None,
-               tools: list[str | ToolSpec] | None = None, resume: bool | None = None, **more) -> "AgentConfig":
+               tools: list[str | ToolSpec] | None = None, resume: bool | None = None,
+               profile: "AgentProfile | None" = None, **more) -> "AgentConfig":
         """Derive a config with only the given fields replaced.
 
         Fields left as None are inherited from this config; the session
@@ -260,6 +265,7 @@ class AgentConfig:
             session=session if session is not None else self.session,
             tools=tools if tools is not None else self.tools,
             resume=resume if resume is not None else self.resume,
+            profile=profile if profile is not None else self.profile,
             _runtime=self._runtime,
         )
 
@@ -305,8 +311,12 @@ class AgentConfig:
                                  resume=self.resume)
 
     def workspace(self) -> str:
-        """Render the deterministic whole-workspace context."""
-        return self._rt().workspace()
+        """One-time deterministic workspace read, injected into the session.
+
+        The context lands in the session window once, marker-deduped, so
+        resumed sessions keep the recorded read instead of re-reading.
+        """
+        return self._rt().workspace(session=self.get_session())
 
     @property
     def request(self) -> str:
@@ -455,6 +465,7 @@ class WorkflowRuntime:
             result = agent_run(
                 str(self.root), prompt,
                 lambda messages, tools=None: chat(messages, tools, model=model),
+                profile=config.profile,
                 tools=config.tools, session=session, prompt_appended=prompt_appended,
             )
             self._complete_step(session, step_hash)
@@ -495,17 +506,34 @@ class WorkflowRuntime:
             session.append({"xgdf-prompt": text})  # resume event
         return True
 
-    def workspace(self) -> str:
-        """Render the deterministic whole-workspace context."""
-        return workspace_context(self.root)
+    def workspace(self, session: "Session | None" = None) -> str:
+        """Deterministic whole-workspace read (m-time ordered), once.
+
+        The file reads are a hardcoded deterministic step of the workflow:
+        the rendered context is appended to the session window once (marker
+        deduped), never re-injected per turn or per prompt. The default
+        workflow runs this at its start; other workflows run it only if
+        they call it.
+        """
+        context = workspace_context(self.root)
+        if session is not None:
+            marker = "# xgdf workspace read"
+            if not any(marker in m.get("content", "") for m in session):
+                session.add("system", f"{marker}\n{context}")
+        return context
 
 
 def _builtin_cmd(cfg: AgentConfig) -> int:
-    """The built-in shell-command workflow (selected with ``-w xg-cmd``)."""
+    """The built-in shell-command workflow (selected with ``-w xg-cmd``).
+
+    Deliberately no workspace read: it needs one command, not file context.
+    """
+    from xg.profiles import command_profile
+
     session = cfg.get_session()
     if not cfg.request and not cfg.prompt("your command request", session=session):
         return 0
-    command_cfg = cfg.branch(session=session, tools=["cmd"])
+    command_cfg = cfg.branch(session=session, tools=["cmd"], profile=command_profile())
     cfg.agent(cfg.request, config=command_cfg)
     return 0
 
@@ -513,12 +541,16 @@ def _builtin_cmd(cfg: AgentConfig) -> int:
 def _builtin_default(cfg: AgentConfig) -> int:
     """The default workflow: the constrained file-editing flow.
 
+    Starts with the hardcoded deterministic workspace read (m-time ordered
+    files, injected into the session once); subsequent agent turns never
+    re-inject it.
+
     Uses a named (resumable) session so repeated `xg` invocations continue
     one JSONL window in the workspace.
     """
-    cfg.workspace()  # forced deterministic read
-    print("tools: select -> edit|close | new(name, content) | delete\n")
     session = cfg.get_session()
+    cfg.workspace()  # deterministic reads, once, into the session
+    print("tools: select -> edit|close | new(name, content) | delete\n")
     if not cfg.request and not cfg.prompt("your request", session=session):
         return 0
     cfg.agent(cfg.request)

@@ -98,11 +98,11 @@ def _run_logged(root, prompt, chat, profile, state, tool_specs, session, prompt_
     profile = profile or default_profile()
     if not any(m.get("role") == "system" for m in session):  # O(1) RAM walk
         session.add("system", profile.system_prompt)
-    context = profile.context(root)
-    if prompt_appended:
-        session.add("user", f"PROFILE CONTEXT:\n{context}")
-    else:
-        session.add("user", f"REQUEST:\n{prompt}\n\nPROFILE CONTEXT:\n{context}")
+    # The workspace context is NOT injected here: deterministic file reads
+    # are a one-time step of the workflow that needs them (xg-default calls
+    # cfg.workspace() at its start), never a per-turn injection.
+    if not prompt_appended:
+        session.add("user", prompt)
     while True:
         message = chat(session, schemas(state.allowed_tools(), overrides=tool_specs))
         session.append(message)

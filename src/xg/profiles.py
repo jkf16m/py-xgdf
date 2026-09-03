@@ -57,6 +57,20 @@ def default_profile() -> AgentProfile:
     )
 
 
+def command_profile() -> AgentProfile:
+    """Profile for the command workflow: no workspace read, shell commands."""
+    return AgentProfile(
+        name="command",
+        context=lambda root: "(no automatic context: the command workflow "
+                             "does not read the workspace)",
+        system_prompt=(
+            "You are a shell command agent. You have exactly one tool: cmd. "
+            "Use cmd to propose commands; do not call any other tool. "
+            "Propose safe, useful commands and use one command per call."
+        ),
+    )
+
+
 def empty_profile(name: str = "empty") -> AgentProfile:
     """Profile base with no automatic context; useful for custom agents."""
     return AgentProfile(
