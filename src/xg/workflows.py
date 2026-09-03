@@ -7,23 +7,17 @@ Public API:
     run_workflow(name, cwd, cfg=None) -> int
 
 A workflow is a Python file at ``.xg/workflows/<name>.py`` exposing
-``run(cfg)``. ``cfg`` is an :class:`AgentConfig`: it carries the inference
-settings (model, session, tools) AND the runtime primitives. The xg runner
-creates it for ``xg -w <name>``; a parent workflow passes its own cfg to a
-child workflow, so the child inherits the model, session, and tools:
+``run(cfg)`` as a generator that yields operations:
 
     def run(cfg):
-        from xg.utils import read_workspace
+        session = cfg.get_session()
+        yield WorkspaceRead(session)
+        request = yield Prompt(session, "your request")
+        yield Agent(session, request, tools=["select", "edit"])
 
-        cfg.shell("ruff format .")
-        cfg.agent("fix all lint issues", config=AgentConfig(model="org/big"))
-
-        session = cfg.get_session()             # writable context window
-        read_workspace(session, cfg.root)       # deterministic reads, once
-        if cfg.prompt("describe the change"):
-            cfg.agent(cfg.request)
-
-        cfg.workflow("changelog")               # reuse another workflow
+The runner walks through operations, skipping completed steps on resume.
+Each yield is a checkpoint: the runner captures state and restores it
+when resuming.
 
 Rules:
   * ``cfg.shell()`` is a trusted author step, never available to the model;
@@ -53,6 +47,134 @@ from xg.tools import ToolSpec
 
 if TYPE_CHECKING:
     from xg.profiles import AgentProfile
+
+
+# ---- workflow operations (yielded by generator workflows) ----
+
+
+class WorkspaceRead:
+    """Read all workspace files into the session."""
+    __slots__ = ()
+
+
+class Prompt:
+    """Ask the user a question. Captures the answer in session state."""
+    __slots__ = ("message",)
+
+    def __init__(self, message: str):
+        self.message = message
+
+
+class Agent:
+    """Run one constrained agent turn."""
+    __slots__ = ("prompt", "tools", "profile")
+
+    def __init__(self, prompt: str, tools: list[str | ToolSpec] | None = None,
+                 profile: "AgentProfile | None" = None):
+        self.prompt = prompt
+        self.tools = tools
+        self.profile = profile
+
+
+class Workflow:
+    """Run another workflow by name."""
+    __slots__ = ("name",)
+
+    def __init__(self, name: str):
+        self.name = name
+
+
+def _load_session_state(session: Session) -> dict:
+    """Load workflow state from the session JSONL."""
+    state = {"completed_steps": {}, "captured": {}}
+    for entry in session._raw():
+        if entry.get("type") == "workflow_step":
+            step = entry["step"]
+            state["completed_steps"][step] = True
+            if "captured" in entry:
+                state["captured"][step] = entry["captured"]
+    return state
+
+
+def _save_session_state(session: Session, step: int, captured: dict | None = None) -> None:
+    """Append a workflow step completion to the session JSONL."""
+    entry = {"type": "workflow_step", "step": step, "completed": True}
+    if captured:
+        entry["captured"] = captured
+    session.append(entry)
+
+
+def run_workflow_generator(gen, session: Session, cfg: AgentConfig) -> None:
+    """Walk through a generator-based workflow, handling resume.
+
+    The generator yields operations (WorkspaceRead, Prompt, Agent, Workflow).
+    The runner executes each operation, captures state, and on resume skips
+    completed steps by sending captured values back to the generator.
+    """
+    from xg.utils import read_workspace
+
+    state = _load_session_state(session)
+    step = 0
+
+    try:
+        op = next(gen)
+    except StopIteration:
+        return
+
+    while True:
+        completed = step in state["completed_steps"]
+        captured = state["captured"].get(step)
+
+        if completed:
+            # Skip this operation, send captured value back
+            value = captured.get("value") if captured else None
+            try:
+                op = gen.send(value)
+            except StopIteration:
+                break
+            step += 1
+            continue
+
+        # Execute the operation
+        send_value = None
+        if isinstance(op, WorkspaceRead):
+            read_workspace(session, cfg.root)
+            _save_session_state(session, step)
+
+        elif isinstance(op, Prompt):
+            if not cfg.request:
+                if not cfg.prompt(op.message, session=session):
+                    return
+            else:
+                # Request was provided via CLI
+                if session.path is not None:
+                    session.add("user", cfg.request)
+                    session.append({"xgdf-prompt": cfg.request})
+            _save_session_state(session, step, {"value": cfg.request})
+            send_value = cfg.request  # Send captured value back to generator
+
+        elif isinstance(op, Agent):
+            # Interpolate {{variable}} references in prompt
+            prompt = op.prompt
+            for key, val in (captured or {}).items():
+                if isinstance(val, str):
+                    prompt = prompt.replace(f"{{{{{key}}}}}", val)
+            if not op.tools and not op.profile:
+                cfg.agent(prompt)
+            else:
+                agent_cfg = cfg.branch(tools=op.tools, profile=op.profile)
+                cfg.agent(prompt, config=agent_cfg)
+            _save_session_state(session, step)
+
+        elif isinstance(op, Workflow):
+            run_workflow(op.name, cfg.root, cfg=cfg)
+            _save_session_state(session, step)
+
+        try:
+            op = gen.send(send_value)
+        except StopIteration:
+            break
+        step += 1
 
 
 @dataclass(kw_only=True, slots=True)
@@ -122,11 +244,15 @@ class Session:
         """Walk the window oldest-first; one message in RAM at a time.
 
         xgdf metadata lines (step completion markers, recorded prompts) are
-        resume bookkeeping; inference never sees them.
+        resume bookkeeping; inference never sees them. Workflow step entries
+        (type field) are also metadata.
         """
         for entry in self._raw():
-            if not any(key.startswith("xgdf-") for key in entry):
-                yield entry
+            if any(key.startswith("xgdf-") for key in entry):
+                continue
+            if "type" in entry:
+                continue
+            yield entry
 
     def events(self):
         """Yield recorded resume events in order.
@@ -518,20 +644,22 @@ def _builtin_cmd(cfg: AgentConfig) -> int:
 def _builtin_default(cfg: AgentConfig) -> int:
     """The default workflow: the constrained file-editing flow.
 
-    Starts with the hardcoded deterministic workspace read (m-time ordered
-    files, injected into the session once); subsequent agent turns never
-    re-inject it.
-
-    Uses a named (resumable) session so repeated `xg` invocations continue
-    one JSONL window in the workspace.
+    Every invocation creates a fresh session. Resume is explicit via
+    --resume. Sessions are ephemeral: users can identify when the agent
+    becomes unreliable, because context never accumulates.
     """
+    import uuid
+
     session = cfg.get_session()
-    from xg.utils import read_workspace
-    read_workspace(session, cfg.root)  # deterministic reads, once, explicit
-    print("tools: select -> edit|close | new(name, content) | delete\n")
-    if not cfg.request and not cfg.prompt("your request", session=session):
-        return 0
-    cfg.agent(cfg.request)
+    if not session.path:
+        session.name = f"run-{uuid.uuid4().hex[:8]}"
+
+    def workflow():
+        yield WorkspaceRead()
+        request = yield Prompt("your request")
+        yield Agent(request, tools=["select", "edit", "new", "delete"])
+
+    run_workflow_generator(workflow(), session, cfg)
     return 0
 
 
@@ -612,7 +740,14 @@ def run_workflow(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = Non
         import dataclasses
 
         cfg = dataclasses.replace(cfg, _runtime=WorkflowRuntime(cwd))
-    return int(program(cfg) or 0)
+    result = program(cfg)
+    # Generator-based workflow: walk through operations
+    import types
+    if isinstance(result, types.GeneratorType):
+        session = cfg.get_session()
+        run_workflow_generator(result, session, cfg)
+        return 0
+    return int(result or 0)
 
 
 def list_workflows(cwd: str | Path = ".") -> list[str]:

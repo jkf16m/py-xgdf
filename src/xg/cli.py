@@ -46,7 +46,7 @@ def _main_parser(resume_default=None) -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"xg {_version()}")
     parser.add_argument("prompt", nargs="*",
                         help="request text for the default (or named) workflow")
-    parser.add_argument("--resume", action="store_true", default=resume_default,
+    parser.add_argument("-r", "--resume", action="store_true", default=resume_default,
                         help="replay a recorded session until its current "
                              "state, then go live: no arguments resume the "
                              "last session of the current path; PATH resumes "
@@ -69,14 +69,19 @@ def _init_parser() -> argparse.ArgumentParser:
 
 
 def _extract_resume(argv: list[str]) -> tuple[list[str], list[str] | None]:
-    """Pop ``--resume`` plus up to two PATH/SESSION words from argv.
+    """Pop ``--resume`` (or ``-r``) plus up to two PATH/SESSION words.
 
     argparse can't cap an optional's nargs, so this runs before parsing.
     Returns (remaining argv, resume args or None if the flag is absent).
     """
-    if "--resume" not in argv:
+    flag = None
+    for candidate in ("--resume", "-r"):
+        if candidate in argv:
+            flag = candidate
+            break
+    if flag is None:
         return argv, None
-    index = argv.index("--resume")
+    index = argv.index(flag)
     argv = argv[:index] + argv[index + 1:]
     args: list[str] = []
     while (index < len(argv) and not argv[index].startswith("-")
@@ -109,7 +114,9 @@ def _resume_config(resume_args: list[str], request: str):
         if name is None:
             raise RuntimeError("no session to resume in the current path")
     runtime = WorkflowRuntime(root, request=request)
-    return AgentConfig(session=Session(name=name), resume=True, _runtime=runtime)
+    session = Session(name=name)
+    session.bind(root)  # Load the existing session file
+    return AgentConfig(session=session, resume=True, _runtime=runtime)
 
 
 def _list_workflows() -> int:

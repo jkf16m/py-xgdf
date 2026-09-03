@@ -58,29 +58,29 @@ def read_workspace(session, root: str | Path) -> str:
     entries = _workspace_files(root)
     if not entries:
         return 0
-    session.append(
-        {
-            "role": "assistant",
-            "content": "(deterministic workspace read)",
-            "tool_calls": [
-                {
-                    "id": _read_id(entry.path),
-                    "type": "function",
-                    "function": {
-                        "name": "read",
-                        "arguments": json.dumps({"path": entry.path}),
-                    },
-                }
-                for entry in entries
-            ],
-        }
-    )
     for entry in entries:
+        tool_id = _read_id(entry.path)
+        session.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": tool_id,
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": json.dumps({"path": entry.path}),
+                        },
+                    }
+                ],
+            }
+        )
         session.append(
             {
                 "role": "tool",
-                "tool_call_id": _read_id(entry.path),
-                "content": f"=== {entry.path} | mtime_ns: {entry.mtime_ns} ===\n{entry.content}",
+                "tool_call_id": tool_id,
+                "content": entry.content,
             }
         )
     return len(entries)

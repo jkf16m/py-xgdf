@@ -64,7 +64,13 @@ def _request_chunks(source, model: str, tools):
     yield b'{"model":' + json.dumps(model).encode() + b',"messages":['
     separator = b""
     for message in source:
-        yield separator + json.dumps(message, ensure_ascii=False).encode()
+        # Normalize assistant messages with tool_calls: content must be null
+        # per OpenAI spec, but some models/providers reject null content.
+        # We send null as the spec requires; providers should handle it.
+        msg = dict(message)
+        if msg.get("role") == "assistant" and msg.get("tool_calls") and msg.get("content") is None:
+            msg["content"] = ""  # Some providers reject null content
+        yield separator + json.dumps(msg, ensure_ascii=False).encode()
         separator = b","
     yield b"]"
     if tools:
