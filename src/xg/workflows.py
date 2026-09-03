@@ -644,22 +644,56 @@ def _builtin_cmd(cfg: AgentConfig) -> int:
 def _builtin_default(cfg: AgentConfig) -> int:
     """The default workflow: the constrained file-editing flow.
 
-    Every invocation creates a fresh session. Resume is explicit via
-    --resume. Sessions are ephemeral: users can identify when the agent
-    becomes unreliable, because context never accumulates.
+    Uses a langgraph StateGraph for explicit, resumable workflow execution.
+    Every invocation creates a fresh session. Resume is explicit via --resume.
     """
     import uuid
+    from typing import TypedDict
+    from langgraph.graph import StateGraph, START, END
 
     session = cfg.get_session()
     if not session.path:
         session.name = f"run-{uuid.uuid4().hex[:8]}"
 
-    def workflow():
-        yield WorkspaceRead()
-        request = yield Prompt("your request")
-        yield Agent(request, tools=["select", "edit", "new", "delete"])
+    class WorkflowState(TypedDict):
+        request: str
+        response: str
 
-    run_workflow_generator(workflow(), session, cfg)
+    def read_workspace_node(state: WorkflowState):
+        from xg.utils import read_workspace
+        read_workspace(session, cfg.root)
+        return state
+
+    def prompt_user_node(state: WorkflowState):
+        if not cfg.request:
+            if not cfg.prompt("your request", session=session):
+                return {"request": ""}
+        else:
+            if session.path is not None:
+                session.add("user", cfg.request)
+                session.append({"xgdf-prompt": cfg.request})
+        return {"request": cfg.request}
+
+    def run_agent_node(state: WorkflowState):
+        if not state.get("request"):
+            return {"response": ""}
+        result = cfg.agent(state["request"], config=cfg.branch(
+            tools=["select", "edit", "new", "delete"]
+        ))
+        return {"response": result}
+
+    graph = StateGraph(WorkflowState)
+    graph.add_node("read_workspace", read_workspace_node)
+    graph.add_node("prompt_user", prompt_user_node)
+    graph.add_node("run_agent", run_agent_node)
+
+    graph.add_edge(START, "read_workspace")
+    graph.add_edge("read_workspace", "prompt_user")
+    graph.add_edge("prompt_user", "run_agent")
+    graph.add_edge("run_agent", END)
+
+    app = graph.compile()
+    app.invoke({"request": "", "response": ""})
     return 0
 
 
