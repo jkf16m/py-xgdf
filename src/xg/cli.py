@@ -19,6 +19,7 @@ from prompt_toolkit import prompt as line_prompt
 from prompt_toolkit.history import FileHistory
 
 from xg.agent import ToolRejected, run
+from xg.sdk import NoToolCall
 from xg.init import initialize
 from xg.llm import chat
 from xg.pty import launch, propose
@@ -49,6 +50,9 @@ def _run_session(store: SessionStore, session, profile: AgentProfile | None = No
     except ToolRejected as exc:
         rejected = True
         print(f"\nRejected tool call: {exc}")
+    except NoToolCall as exc:
+        print(f"\n{exc.text or 'the model did not propose a tool call'}")
+        print("\033[90mno tool call proposed; session closed — start a new one with a sharper request\033[0m")
     finally:
         store.close(session)
         print(f"\nclosed session {session.id}; start a new session with `xg \"request\"`")

@@ -151,6 +151,14 @@ def delete() -> ToolRef:
     return ToolRef("delete")
 
 
+class NoToolCall(RuntimeError):
+    """The model replied without the required tool call at an execution point."""
+
+    def __init__(self, message: str, text: str = ""):
+        super().__init__(message)
+        self.text = text  # the model's plain-text reply, if any
+
+
 class Agent:
     """Imperative profile runtime; each ``call`` is one model turn."""
 
@@ -176,15 +184,21 @@ class Agent:
         if state is None:
             state = self._tool_state = ToolState(self.root)
         allowed = {tool.name for tool in tool_names}
+        from xg.docs import documentation
         user = f"REQUEST:\n{self.prompt}\n\nCONTEXT:\n{self.context.render()}"
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": f"{self.system_prompt}\n\n{documentation()}"},
             {"role": "user", "content": user},
         ]
         message = self.chat(messages, schemas(allowed))
         calls = message.get("tool_calls") or []
         if len(calls) != 1:
-            raise RuntimeError("an execution point must produce exactly one tool call")
+            text = (message.get("content") or "").strip()
+            raise NoToolCall(
+                f"expected exactly one tool call, got {len(calls)}"
+                + (f"; model replied with text: {text[:200]}" if text else ""),
+                text=text,
+            )
         call = calls[0]
         function = call.get("function") or {}
         name = function.get("name", "")
