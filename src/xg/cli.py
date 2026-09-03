@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""xg: a single-prompt deterministic coding agent with staged sessions.
+"""xg: the Generative Development Framework CLI.
 
 Commands:
-    xg --pty       launch an interactive shell behind a pseudo-terminal
-    xg PROMPT      create a new inactive coding-agent session
-    xg c [TEXT]    append input to the latest inactive session
-    xg r|run       execute the latest inactive session
-    xg cmd [PROMPT]  propose a shell command and invoke it (or inject it into
-                     the active --pty shell prompt); without PROMPT, use TTY input
+    xg              run the default workflow (interactive)
+    xg PROMPT       run the default workflow with a request
+    xg -w NAME      run a named workflow; -w alone lists them
+    xg init         scaffold .xg/ in the current project
+    xg --pty        launch an interactive shell behind a pseudo-terminal
+    xg cmd [PROMPT] propose a shell command and invoke it (or inject it into
+                    the active --pty shell prompt); without PROMPT, use TTY input
 """
 
 from __future__ import annotations
@@ -18,15 +19,9 @@ from pathlib import Path
 from prompt_toolkit import prompt as line_prompt
 from prompt_toolkit.history import FileHistory
 
-from xg.agent import ToolRejected, run
-from xg.sdk import NoToolCall
 from xg.init import initialize
 from xg.llm import chat
 from xg.pty import launch, propose
-from xg.profile_loader import load_profile
-from xg.profiles import AgentProfile
-from xg.session import SessionStore
-from xg.workspace import files
 
 
 def _input_text(arguments: list[str]) -> str:
@@ -35,34 +30,6 @@ def _input_text(arguments: list[str]) -> str:
     if not sys.stdin.isatty():
         pieces.append(sys.stdin.read().strip())
     return "\n\n".join(piece for piece in pieces if piece)
-
-
-def _run_session(store: SessionStore, session, profile: AgentProfile | None = None) -> int:
-    """Run and permanently close one inactive session."""
-    store.begin(session)
-    print(f"running session {session.id}")
-    rejected = False
-    try:
-        count = len(files("."))
-        print(f"forced reads: {count} files, oldest to newest by mtime")
-        print("tools: select -> edit|close | new(name, content) | delete\n")
-        run(".", session.prompt, chat, profile=profile)
-    except ToolRejected as exc:
-        rejected = True
-        print(f"\nRejected tool call: {exc}")
-    except NoToolCall as exc:
-        print(f"\n{exc.text or 'the model did not propose a tool call'}")
-        print("\033[90mno tool call proposed; session closed — start a new one with a sharper request\033[0m")
-    finally:
-        store.close(session)
-        print(f"\nclosed session {session.id}; start a new session with `xg \"request\"`")
-    if rejected:
-        # Remove the streamed answer and tool proposal before returning to input.
-        sys.stdout.write("\033[2J\033[H")
-        sys.stdout.flush()
-        print("Tool call rejected. The previous attempt was discarded.")
-        return _interactive(store, profile)
-    return 0
 
 
 def _interactive_cmd() -> int:
@@ -91,40 +58,10 @@ def _interactive_cmd() -> int:
         return 130
 
 
-def _interactive(store: SessionStore, profile: AgentProfile | None = None) -> int:
-    """Collect context until an empty request starts inference."""
-    history = FileHistory(str(Path(".xg") / "history"))
-    session = store.create("")
-    print("\033[90mType context. Submit an empty request to start inference; Ctrl-C exits and saves it.\033[0m")
-    try:
-        while True:
-            value = line_prompt(">> ", history=history).strip()
-            if not value:
-                if not session.prompt.strip():
-                    print("\033[90mAdd context first, or press Ctrl-C to save and exit.\033[0m")
-                    continue
-                history.append_string(session.prompt)
-                return _run_session(store, session, profile)
-            session.prompt = f"{session.prompt}\n\n{value}" if session.prompt else value
-            store._save(session)
-    except (EOFError, KeyboardInterrupt):
-        if session.prompt.strip():
-            history.append_string(session.prompt)
-        print("\ncontext saved; continue it with `xg c`")
-        return 130
-
-
 def main() -> int:
-    """Create, continue, or run a deterministic request session."""
+    """Run the xgdf runtime: everything routes through a workflow."""
     argv = sys.argv[1:]
-    profile = None
-    if len(argv) >= 2 and argv[0] in {"-a", "--agent"}:
-        try:
-            profile = load_profile(argv[1], ".")
-        except RuntimeError as exc:
-            print(f"xg: {exc}", file=sys.stderr)
-            return 2
-        argv = argv[2:]
+
     if argv and argv[0].lower() == "init":
         if len(argv) != 1:
             print("usage: xg init", file=sys.stderr)
@@ -169,42 +106,18 @@ def main() -> int:
             return 2
         return propose(prompt, chat)
 
-    store = SessionStore(".")
-    command = argv[0].lower() if argv and argv[0].lower() in {"c", "r", "run"} else None
-
-    if command == "c":
-        text = _input_text(argv[1:])
-        try:
-            session = store.latest_open()
-            if not text and sys.stdin.isatty():
-                if session is None:
-                    raise RuntimeError("no inactive session to inspect")
-                print(session.prompt or "(no context added yet)")
-                return 0
-            session = store.continue_latest(text)
-        except RuntimeError as exc:
-            print(f"xg: {exc}", file=sys.stderr)
-            return 1
-        print(f"continued session {session.id}; run `xg r` when ready")
-        return 0
-
-    if command in {"r", "run"}:
-        session = store.latest_open()
-        if session is None:
-            print("xg: no inactive session; start one with `xg \"request\"`", file=sys.stderr)
-            return 1
-        return _run_session(store, session, profile)
-
-    if not argv and sys.stdin.isatty():
-        return _interactive(store, profile)
+    # Everything else routes through the default workflow: bare `xg` asks
+    # for a request interactively; `xg PROMPT...` runs with the request
+    # pre-loaded. Same workflow, same session schema as `xg -w default`.
+    from xg.workflows import AgentConfig, WorkflowRuntime, run_workflow
 
     prompt = _input_text(argv)
-    if not prompt:
-        return 0
-    session = store.create(prompt)
-    FileHistory(str(Path(".xg") / "history")).append_string(prompt)
-    print(f"created session {session.id}; run `xg r` when ready")
-    return 0
+    runtime = WorkflowRuntime(".", request=prompt)
+    try:
+        return run_workflow("default", ".", cfg=AgentConfig(_runtime=runtime))
+    except RuntimeError as exc:
+        print(f"xg: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

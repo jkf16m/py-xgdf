@@ -301,9 +301,9 @@ def default_model(cwd: str | Path = ".") -> str:
 class WorkflowRuntime:
     """Primitives handed to a workflow program."""
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, request: str = ""):
         self.root = Path(root).resolve()
-        self.request: str = ""
+        self.request: str = request  # pre-loaded request (e.g. `xg "..."`)
         self.documentation: str = documentation_for(self.root)  # location-dependent, see docs.py
 
     def _inject_documentation(self, session: Session) -> None:
@@ -388,10 +388,15 @@ class WorkflowRuntime:
 
 
 def _builtin_default(cfg: AgentConfig) -> int:
-    """The default workflow: the constrained file-editing flow."""
+    """The default workflow: the constrained file-editing flow.
+
+    Uses a named (resumable) session so repeated `xg` invocations continue
+    one JSONL window in the workspace.
+    """
     cfg.workspace()  # forced deterministic read
     print("tools: select -> edit|close | new(name, content) | delete\n")
-    if not cfg.prompt("your request"):
+    session = cfg.get_session()
+    if not cfg.request and not cfg.prompt("your request", session=session):
         return 0
     cfg.agent(cfg.request)
     return 0

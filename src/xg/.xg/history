@@ -4,3 +4,27 @@
 
 # 2026-09-03 02:29:40.794231
 +I need you to fix an issue, when teh agent finishes to reply, out of nowhere, it reprints the conversations. like, we have both, the stylized markdown conversation and then it gets reprinted with no style. we have to get rid of the last print, with no styling
+
+# 2026-09-03 02:30:32.955523
++I need you to fix an issue, when teh agent finishes to reply, out of nowhere, it reprints the conversations. like, we have both, the stylized markdown conversation and then it gets reprinted with no style. we have to get rid of the last print, with no styling
+
+# 2026-09-03 02:31:13.508556
++where is the code for tools? in xg
+
+# 2026-09-03 02:31:21.004661
++where is the code for tools in xg?
+
+# 2026-09-03 02:31:21.892137
++where is the code for tools in xg?
+
+# 2026-09-03 02:31:53.395272
++where is the default workflow?
+
+# 2026-09-03 02:31:53.868129
++where is the default workflow?
+
+# 2026-09-03 02:32:31.705974
++what happens if I run xg without -w parameter, it runs default or not?
+
+# 2026-09-03 02:32:32.772604
++what happens if I run xg without -w parameter, it runs default or not?

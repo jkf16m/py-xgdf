@@ -1,6 +1,6 @@
 {
   "id": "1788402534722591477-a810ac8a",
   "prompt": "I need you to fix an issue, when teh agent finishes to reply, out of nowhere, it reprints the conversations. like, we have both, the stylized markdown conversation and then it gets reprinted with no style. we have to get rid of the last print, with no styling",
-  "status": "running",
+  "status": "closed",
   "activity": true
 }
