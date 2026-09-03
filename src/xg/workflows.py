@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+import functools
+
 from xg.config import xg_directories, load
 from xg.docs import documentation_for
 from xg.llm import chat
@@ -47,6 +49,42 @@ from xg.tools import ToolSpec
 
 if TYPE_CHECKING:
     from xg.profiles import AgentProfile
+
+
+# ---- @workflow decorator ----
+
+_WORKFLOW_REGISTRY: dict[str, Callable] = {}
+
+
+def workflow(fn=None, *, name: str | None = None):
+    """Decorator that registers a function as an exposed workflow.
+
+    The function should return a compiled langgraph graph.
+
+        @workflow
+        def my_flow():
+            graph = StateGraph(...)
+            ...
+            return graph.compile()
+
+    Discovered via ``xg -w my-flow``.
+    """
+    def decorator(func: Callable) -> Callable:
+        workflow_name = name or func.__name__.replace("_", "-")
+        _WORKFLOW_REGISTRY[workflow_name] = func
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        wrapper.__xg_workflow__ = workflow_name
+        return wrapper
+    if fn is not None:
+        return decorator(fn)
+    return decorator
+
+
+def list_exposed_workflows() -> dict[str, Callable]:
+    """Return all @workflow-decorated functions."""
+    return dict(_WORKFLOW_REGISTRY)
 
 
 # ---- workflow operations (yielded by generator workflows) ----
@@ -649,93 +687,89 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 
 
-def _make_default_state():
+def _builtin_default() -> "CompiledStateGraph":
+    """The default workflow: the constrained file-editing flow.
+
+    Returns a compiled graph. The runner handles session, checkpoint,
+    and resume logic.
+    """
     from typing import TypedDict
-    class DefaultWorkflowState(TypedDict):
-        request: str
-        response: str
-    return DefaultWorkflowState
-
-
-def _read_workspace(state, config):
-    from xg.utils import read_workspace
-    cfg: AgentConfig = config["configurable"]["cfg"]
-    session = cfg.get_session()
-    read_workspace(session, cfg.root)
-    return state
-
-
-def _prompt_user(state, config):
-    cfg: AgentConfig = config["configurable"]["cfg"]
-    session = cfg.get_session()
-    if not cfg.request:
-        if not cfg.prompt("your request", session=session):
-            return {"request": ""}
-    else:
-        if session.path is not None:
-            session.add("user", cfg.request)
-            session.append({"xgdf-prompt": cfg.request})
-    return {"request": cfg.request}
-
-
-def _run_agent(state, config):
-    cfg: AgentConfig = config["configurable"]["cfg"]
-    if not state.get("request"):
-        return {"response": ""}
-    result = cfg.agent(state["request"], config=cfg.branch(
-        tools=["select", "edit", "new", "delete"]
-    ))
-    return {"response": result}
-
-
-def _build_default_graph(checkpointer=None):
-    """Build the default workflow graph."""
     from langgraph.graph import StateGraph, START, END
 
-    State = _make_default_state()
-    graph = StateGraph(State)
-    graph.add_node("read_workspace", _read_workspace)
-    graph.add_node("prompt_user", _prompt_user)
-    graph.add_node("run_agent", _run_agent)
+    class WorkflowState(TypedDict):
+        request: str
+        response: str
+
+    def read_workspace(state: WorkflowState, config):
+        from xg.utils import read_workspace
+        cfg: AgentConfig = config["configurable"]["cfg"]
+        session = cfg.get_session()
+        read_workspace(session, cfg.root)
+        return state
+
+    def prompt_user(state: WorkflowState, config):
+        cfg: AgentConfig = config["configurable"]["cfg"]
+        session = cfg.get_session()
+        if not cfg.request:
+            if not cfg.prompt("your request", session=session):
+                return {"request": ""}
+        else:
+            if session.path is not None:
+                session.add("user", cfg.request)
+                session.append({"xgdf-prompt": cfg.request})
+        return {"request": cfg.request}
+
+    def run_agent(state: WorkflowState, config):
+        cfg: AgentConfig = config["configurable"]["cfg"]
+        if not state.get("request"):
+            return {"response": ""}
+        result = cfg.agent(state["request"], config=cfg.branch(
+            tools=["select", "edit", "new", "delete"]
+        ))
+        return {"response": result}
+
+    graph = StateGraph(WorkflowState)
+    graph.add_node("read_workspace", read_workspace)
+    graph.add_node("prompt_user", prompt_user)
+    graph.add_node("run_agent", run_agent)
     graph.add_edge(START, "read_workspace")
     graph.add_edge("read_workspace", "prompt_user")
     graph.add_edge("prompt_user", "run_agent")
     graph.add_edge("run_agent", END)
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile()
 
 
-def _builtin_default(cfg: AgentConfig) -> int:
-    """The default workflow: the constrained file-editing flow.
+def run_graph(graph, cfg: AgentConfig) -> int:
+    """Run a compiled graph with session and checkpoint handling.
 
-    Uses langgraph checkpointer for resumable execution.
-    Each run gets a unique thread_id; resume uses the same thread_id.
+    This is the runner that handles all infrastructure:
+    - Session creation
+    - Checkpoint persistence
+    - Resume logic
     """
     import uuid
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    from langchain_core.runnables import RunnableConfig
 
     session = cfg.get_session()
     if not session.path:
         session.name = f"run-{uuid.uuid4().hex[:8]}"
 
-    # Use session name as thread_id for resumability
     thread_id = session.name
-
-    # Create checkpointer for this workspace
-    from langgraph.checkpoint.sqlite import SqliteSaver
     checkpointer_path = cfg.root / ".xg" / "checkpoints.db"
-    with SqliteSaver.from_conn_string(str(checkpointer_path)) as checkpointer:
-        graph = _build_default_graph(checkpointer)
 
-        from langchain_core.runnables import RunnableConfig
+    with SqliteSaver.from_conn_string(str(checkpointer_path)) as checkpointer:
+        # Bind checkpointer to graph
+        compiled = graph.with_config(checkpointer=checkpointer)
+
         config: RunnableConfig = {"configurable": {"thread_id": thread_id, "cfg": cfg}}
 
-        # Check if resuming from existing checkpoint
         if cfg.resume:
-            # Get existing state
-            existing = graph.get_state(config)
+            existing = compiled.get_state(config)
             if existing.values:
                 print(f"[resume] resuming from checkpoint: {existing.values}")
 
-        graph.invoke({"request": "", "response": ""}, config=config)
+        compiled.invoke({"request": "", "response": ""}, config=config)
     return 0
 
 
@@ -796,6 +830,11 @@ def load_workflow(name: str, cwd: str | Path = ".") -> Callable[[AgentConfig], i
         local_name, builtin = aliases[name]
         local = _project_workflow(local_name, cwd)
         return local or builtin
+    # Check exposed @workflow registry
+    exposed = list_exposed_workflows()
+    if name in exposed:
+        return exposed[name]
+    # Check project workflows
     workflow = _project_workflow(name, cwd)
     if workflow is None:
         raise RuntimeError(f"workflow not found: {name}")
@@ -816,13 +855,11 @@ def run_workflow(name: str, cwd: str | Path = ".", cfg: AgentConfig | None = Non
         import dataclasses
 
         cfg = dataclasses.replace(cfg, _runtime=WorkflowRuntime(cwd))
-    result = program(cfg)
-    # Generator-based workflow: walk through operations
-    import types
-    if isinstance(result, types.GeneratorType):
-        session = cfg.get_session()
-        run_workflow_generator(result, session, cfg)
-        return 0
+    result = program()
+    # Graph-based workflow: run with checkpoint handling
+    if hasattr(result, "invoke") and hasattr(result, "get_state"):
+        return run_graph(result, cfg)
+    # Legacy workflow: return int
     return int(result or 0)
 
 

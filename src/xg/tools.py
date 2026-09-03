@@ -36,6 +36,70 @@ SELECTED_TOOLS = {"edit", "close"}
 COMMAND_TOOLS = {"cmd"}
 
 
+import dataclasses
+import typing
+
+
+# Mapping from Python type hints to JSON schema types
+_JSON_TYPES = {
+    str: "string",
+    int: "integer",
+    float: "number",
+    bool: "boolean",
+    list: "array",
+    dict: "object",
+}
+
+
+def _dataclass_to_schema(cls) -> dict:
+    """Convert a dataclass to OpenAI parameters JSON schema."""
+    if not dataclasses.is_dataclass(cls):
+        raise TypeError(f"expected a dataclass, got {cls!r}")
+
+    fields = dataclasses.fields(cls)
+    hints = typing.get_type_hints(cls)
+    props = {}
+    required = []
+
+    for f in fields:
+        hint = hints.get(f.name, str)
+        # Unwrap Optional[X] → X
+        origin = getattr(hint, "__origin__", None)
+        if origin is typing.Union:
+            args = [a for a in hint.__args__ if a is not type(None)]
+            hint = args[0] if args else str
+
+        json_type = _JSON_TYPES.get(hint, "string")
+        prop: dict = {"type": json_type}
+
+        # Use field name as description if no docstring
+        if f.metadata and "description" in f.metadata:
+            prop["description"] = f.metadata["description"]
+
+        props[f.name] = prop
+        if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING:
+            required.append(f.name)
+
+    return {
+        "type": "object",
+        "properties": props,
+        "required": required,
+    }
+
+
+def _schema_to_params(schema: dict) -> list[dict]:
+    """Convert JSON schema to flat list for docstring generation."""
+    params = []
+    for name, prop in schema.get("properties", {}).items():
+        params.append({
+            "name": name,
+            "type": prop.get("type", "string"),
+            "description": prop.get("description", ""),
+            "required": name in schema.get("required", []),
+        })
+    return params
+
+
 @dataclass(slots=True)
 class ToolSpec:
     """A tool reference with optional metadata for the model.
@@ -48,11 +112,41 @@ class ToolSpec:
 
     name: str
     description: str | None = None
-    parameters: dict | None = None
+    parameters: type | list[Parameter] | None = None  # dataclass or list of Parameter
 
     @property
     def title(self) -> str:
         return self.name
+
+    def to_openai_schema(self) -> dict:
+        """Convert to OpenAI tool format."""
+        func: dict = {"name": self.name}
+        if self.description:
+            func["description"] = self.description
+        if self.parameters is not None:
+            if dataclasses.is_dataclass(self.parameters):
+                func["parameters"] = _dataclass_to_schema(self.parameters)
+            elif isinstance(self.parameters, list):
+                # Legacy list of Parameter objects
+                props = {}
+                required = []
+                for p in self.parameters:
+                    prop: dict = {"type": p.type}
+                    if p.description:
+                        prop["description"] = p.description
+                    if p.enum:
+                        prop["enum"] = p.enum
+                    if p.items_type:
+                        prop["items"] = {"type": p.items_type}
+                    props[p.name] = prop
+                    if p.required:
+                        required.append(p.name)
+                func["parameters"] = {
+                    "type": "object",
+                    "properties": props,
+                    "required": required,
+                }
+        return {"type": "function", "function": func}
 
 
 def _confirm_terminal(message: str) -> bool:
